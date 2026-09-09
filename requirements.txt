@@ -1,0 +1,9 @@
+# Fase 1: nenhum componente de machine learning denso.
+# O fastembed aqui carrega só o BM25 (stopwords + stemmer, ~55 KiB), não um modelo neural.
+requests>=2.32,<3
+beautifulsoup4>=4.12,<5
+lxml>=5.3,<7
+qdrant-client>=1.12,<2
+fastembed>=0.6,<1
+# O SDK 2.x renomeou FastMCP para MCPServer; mcp_server/server.py usa a API 2.x.
+mcp>=2.0,<3
