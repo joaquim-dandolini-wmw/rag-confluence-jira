@@ -66,6 +66,7 @@ def _knowledge_index() -> KnowledgeIndex:
             cfg.fastembed_cache_dir,
             allow_download=cfg.allow_model_download,
             embedding=cfg.embedding,
+            rerank=cfg.rerank,
         )
     return _index
 
@@ -175,6 +176,7 @@ def search_knowledge_base(
         # O modo que de fato rodou, não o que foi pedido: com "auto" quem
         # chamou precisa saber qual dos três respondeu.
         "mode": index.last_mode or mode,
+        "reranked": index.last_reranked,
         "count": len(hits),
         "filters": {"source": source, "project": project, "space_key": space_key},
         "results": [hit.as_dict() for hit in hits],

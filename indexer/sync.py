@@ -89,6 +89,7 @@ def _open_index(
         allow_download=cfg.allow_model_download,
         embedding=embedding or cfg.embedding,
         embedder=embedder,
+        rerank=cfg.rerank,
     )
 
 
@@ -640,6 +641,10 @@ def _build_parser() -> argparse.ArgumentParser:
     search_cmd.add_argument("--source", choices=[SOURCE_CONFLUENCE, SOURCE_JIRA])
     search_cmd.add_argument("--project")
     search_cmd.add_argument("--space-key", dest="space_key")
+    search_cmd.add_argument(
+        "--rerank", dest="rerank", action=argparse.BooleanOptionalAction,
+        default=None, help="liga/desliga o reranker (padrão: RERANK_ENABLED)",
+    )
 
     subparsers.add_parser("status", help="mostra o estado do store e do índice")
     return parser
@@ -655,11 +660,14 @@ def _run_search(cfg: Config, args: argparse.Namespace) -> None:
             source=args.source,
             project=args.project,
             space_key=args.space_key,
+            rerank=args.rerank,
         )
         modo_usado = index.last_mode or args.mode
+        reranked = index.last_reranked
     elapsed_ms = (time.monotonic() - started) * 1000
     pedido = f" (pedido: {args.mode})" if modo_usado != args.mode else ""
-    print(f"modo={modo_usado}{pedido}  resultados={len(hits)}  {elapsed_ms:.0f} ms")
+    print(f"modo={modo_usado}{pedido}  rerank={'sim' if reranked else 'nao'}  "
+          f"resultados={len(hits)}  {elapsed_ms:.0f} ms")
     for position, hit in enumerate(hits, start=1):
         print(f"{position:>2}. [{hit.score:.4f}] {hit.title}")
         print(f"    {hit.url}")

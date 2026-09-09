@@ -52,6 +52,19 @@ DEFAULT_RRF_WEIGHT_BM25: Final[float] = 2.0
 DEFAULT_RRF_WEIGHT_DENSE: Final[float] = 1.0
 DEFAULT_RRF_K: Final[int] = 60
 
+# Reranker cross-encoder. Mesmo backbone XLM-R large do e5, então o
+# comportamento em português é o já conhecido. Descartado o jina-reranker
+# porque exige trust_remote_code, e executar código remoto num deploy interno
+# offline não vale o meio GB economizado.
+DEFAULT_RERANK_MODEL: Final[str] = "BAAI/bge-reranker-v2-m3"
+# Quantos candidatos da primeira etapa entram no reranker. Medido nesta base,
+# mais candidatos PIORA: o alvo de sinônimo caiu da posição 3 para 5 quando fui
+# de 20 para 80 candidatos, porque mais competição dilui. E cada candidato custa
+# um forward de cross-encoder. 20 e 30 deram o mesmo resultado; fica 30 pela
+# margem, a 475 ms contra 446 ms.
+DEFAULT_RERANK_CANDIDATES: Final[int] = 30
+DEFAULT_RERANK_BATCH_SIZE: Final[int] = 16
+
 
 class ConfigError(RuntimeError):
     """Configuração ausente, inválida ou insegura. Sempre aborta a execução."""
@@ -210,6 +223,24 @@ class EmbeddingConfig:
 
 
 @dataclass(frozen=True)
+class RerankConfig:
+    """Segunda etapa da busca: reordena o que a primeira trouxe.
+
+    Desligável por ambiente porque é a etapa mais cara da consulta e a única
+    que pode ser trocada sem reindexar nada — o reranker não grava vetor, só
+    reordena.
+    """
+
+    model_name: str
+    cache_dir: Path
+    device: str
+    batch_size: int
+    candidates: int
+    enabled: bool
+    allow_download: bool
+
+
+@dataclass(frozen=True)
 class Config:
     store_path: Path
     qdrant_url: str
@@ -217,9 +248,12 @@ class Config:
     fastembed_cache_dir: Path
     allow_model_download: bool
     embedding: EmbeddingConfig
+    rerank: RerankConfig
     jira: JiraConfig | None = None
     confluence: ConfluenceConfig | None = None
     _errors: tuple[str, ...] = field(default=(), repr=False)
+
+
 
     def require_jira(self) -> JiraConfig:
         if self.jira is None:
@@ -279,6 +313,34 @@ def load_config(*, dotenv: bool = True) -> Config:
         errors.append(f"EMBED_BATCH_SIZE={raw_batch!r} não é um inteiro.")
     if embed_batch < 1:
         errors.append(f"EMBED_BATCH_SIZE={embed_batch} precisa ser >= 1.")
+    rerank_device = (_env("RERANK_DEVICE") or embed_device).lower()
+    if not _EMBED_DEVICE_RE.match(rerank_device):
+        errors.append(
+            f"RERANK_DEVICE={rerank_device!r} desconhecido. Aceitos: "
+            f"{', '.join(EMBED_DEVICES)} ou \"cuda:N\"."
+        )
+    raw_cand = _env("RERANK_CANDIDATES")
+    try:
+        rerank_cand = int(raw_cand) if raw_cand else DEFAULT_RERANK_CANDIDATES
+    except ValueError:
+        rerank_cand = DEFAULT_RERANK_CANDIDATES
+        errors.append(f"RERANK_CANDIDATES={raw_cand!r} não é um inteiro.")
+    raw_rb = _env("RERANK_BATCH_SIZE")
+    try:
+        rerank_batch = int(raw_rb) if raw_rb else DEFAULT_RERANK_BATCH_SIZE
+    except ValueError:
+        rerank_batch = DEFAULT_RERANK_BATCH_SIZE
+        errors.append(f"RERANK_BATCH_SIZE={raw_rb!r} não é um inteiro.")
+    rerank = RerankConfig(
+        model_name=_env("RERANK_MODEL") or DEFAULT_RERANK_MODEL,
+        cache_dir=Path(_env("RERANK_CACHE_DIR") or REPO_ROOT / "models" / "reranker"),
+        device=rerank_device,
+        batch_size=max(rerank_batch, 1),
+        candidates=max(rerank_cand, 1),
+        enabled=_env_bool("RERANK_ENABLED", True),
+        allow_download=allow_download,
+    )
+
     embedding = EmbeddingConfig(
         model_name=_env("EMBED_MODEL") or DEFAULT_EMBED_MODEL,
         cache_dir=Path(_env("EMBED_CACHE_DIR") or REPO_ROOT / "models" / "e5"),
@@ -356,6 +418,7 @@ def load_config(*, dotenv: bool = True) -> Config:
         fastembed_cache_dir=cache_dir,
         allow_model_download=allow_download,
         embedding=embedding,
+        rerank=rerank,
         jira=jira,
         confluence=confluence,
         _errors=tuple(errors),

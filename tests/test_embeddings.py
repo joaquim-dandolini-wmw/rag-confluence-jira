@@ -904,3 +904,203 @@ def test_last_mode_registra_o_modo_resolvido(tmp_path):
     assert index.last_mode == "dense"
     index.search("x", limit=5, mode="hybrid")
     assert index.last_mode == "hybrid"
+
+
+# --------------------------------------------------------------------------
+# reranker cross-encoder
+# --------------------------------------------------------------------------
+
+class FakeCrossEncoder:
+    """Dublê: pontua pelo número de palavras da consulta presentes no texto."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def predict(self, sentences, *, batch_size, show_progress_bar):
+        self.calls.append({"pares": list(sentences), "batch_size": batch_size})
+        notas = []
+        for consulta, texto in sentences:
+            palavras = set(consulta.lower().split())
+            notas.append(sum(1 for p in palavras if p in texto.lower()) / max(len(palavras), 1))
+        return notas
+
+
+def rerank_config(**overrides):
+    from config import RerankConfig
+
+    base = {
+        "model_name": "BAAI/bge-reranker-v2-m3",
+        "cache_dir": Path("/tmp/nao-existe-de-proposito"),
+        "device": "cpu",
+        "batch_size": 16,
+        "candidates": 30,
+        "enabled": True,
+        "allow_download": False,
+    }
+    base.update(overrides)
+    return RerankConfig(**base)
+
+
+def test_reranker_reordena_pelo_par_consulta_documento():
+    from indexer.reranking import CrossEncoderReranker
+
+    enc = FakeCrossEncoder()
+    rr = CrossEncoderReranker(rerank_config(), encoder=enc)
+    textos = ["nada a ver", "boleto bancario do pedido", "meio relacionado pedido"]
+    ordenados = rr.rerank("boleto do pedido", textos, text_of=lambda t: t, limit=2)
+    assert [t for t, _ in ordenados] == [
+        "boleto bancario do pedido",
+        "meio relacionado pedido",
+    ]
+
+
+def test_reranker_ve_a_consulta_junto_de_cada_texto():
+    """É isso que o distingue do bi-encoder: o par entra num forward só."""
+    from indexer.reranking import CrossEncoderReranker
+
+    enc = FakeCrossEncoder()
+    rr = CrossEncoderReranker(rerank_config(), encoder=enc)
+    rr.score("minha consulta", ["a", "b"])
+    assert enc.calls[0]["pares"] == [("minha consulta", "a"), ("minha consulta", "b")]
+
+
+def test_reranker_respeita_o_batch_size():
+    from indexer.reranking import CrossEncoderReranker
+
+    enc = FakeCrossEncoder()
+    rr = CrossEncoderReranker(rerank_config(batch_size=4), encoder=enc)
+    rr.score("q", ["a"])
+    assert enc.calls[0]["batch_size"] == 4
+
+
+def test_reranker_com_lista_vazia_nao_chama_o_modelo():
+    from indexer.reranking import CrossEncoderReranker
+
+    enc = FakeCrossEncoder()
+    rr = CrossEncoderReranker(rerank_config(), encoder=enc)
+    assert rr.score("q", []) == []
+    assert rr.rerank("q", [], text_of=lambda t: t, limit=5) == []
+    assert enc.calls == []
+
+
+def test_reranker_cache_ausente_falha_com_instrucao():
+    from indexer.reranking import RerankError, _load_cross_encoder
+
+    with pytest.raises(RerankError) as exc:
+        _load_cross_encoder(rerank_config())
+    mensagem = str(exc.value)
+    assert "models--BAAI--bge-reranker-v2-m3" in mensagem
+    assert "RERANK_ENABLED=0" in mensagem
+
+
+def index_com_reranker(tmp_path, pontos, **cfg_over):
+    from indexer.reranking import CrossEncoderReranker
+
+    index = KnowledgeIndex(
+        "http://127.0.0.1:1", "c", tmp_path, rerank=rerank_config(**cfg_over)
+    )
+    index._client = FakeQdrantComPontos(pontos)  # type: ignore[assignment]
+    index._model = FakeSparse()
+    index._embedder = DenseEmbedder(make_config(device="cpu"), encoder=FakeEncoder())
+    index._reranker_obj = CrossEncoderReranker(
+        rerank_config(**cfg_over), encoder=FakeCrossEncoder()
+    )
+    return index
+
+
+def ponto_texto(doc_id: str, chunk: str, texto: str, score: float):
+    class Ponto:
+        id = chunk
+        payload = {"doc_id": doc_id, "text": texto, "title": "T",
+                   "url": "https://x", "source": "confluence"}
+    Ponto.score = score
+    return Ponto()
+
+
+def test_consulta_lexical_nao_passa_pelo_reranker(tmp_path):
+    """Medido: o cross-encoder derrubou VENDAS-14993 de 1º para 2º.
+
+    Identificador é pedido de exatidão, e disso o BM25 já dá conta.
+    """
+    pontos = [ponto_texto("jira:A", "a", "texto irrelevante", 9.0)]
+    index = index_com_reranker(tmp_path, pontos)
+    index.search("VENDAS-14993", limit=5, mode="auto")
+    assert index.last_mode == "bm25"
+    assert index.last_reranked is False
+
+
+def test_consulta_em_prosa_passa_pelo_reranker(tmp_path):
+    pontos = [ponto_texto("c:1", "x", "algum texto", 0.5)]
+    index = index_com_reranker(tmp_path, pontos)
+    index.search("dados da fatura para pagamento em banco", limit=5, mode="auto")
+    assert index.last_mode == "dense"
+    assert index.last_reranked is True
+
+
+def test_reranker_traz_o_documento_certo_para_o_topo(tmp_path):
+    """O caso que motivou o reranker: o alvo estava no índice, fora da página."""
+    pontos = [
+        ponto_texto("c:1", "a", "layout de integracao de estoque", 0.90),
+        ponto_texto("c:2", "b", "dicionario de dados senior", 0.89),
+        ponto_texto("c:3", "c", "informacoes do boleto bancario do pedido", 0.70),
+    ]
+    index = index_com_reranker(tmp_path, pontos)
+    hits = index.search("boleto bancario do pedido", limit=1, mode="dense")
+    assert hits[0].doc_id == "c:3", "o reranker tem que subir o alvo"
+    assert index.last_reranked is True
+
+
+def test_score_devolvido_e_o_do_reranker(tmp_path):
+    """Devolver o score da primeira etapa faria a lista parecer desordenada."""
+    pontos = [
+        ponto_texto("c:1", "a", "nada a ver", 0.99),
+        ponto_texto("c:2", "b", "boleto do pedido", 0.10),
+    ]
+    index = index_com_reranker(tmp_path, pontos)
+    hits = index.search("boleto do pedido", limit=2, mode="dense")
+    assert hits[0].score > hits[1].score
+    assert hits[0].score != pytest.approx(0.99)
+
+
+def test_primeira_etapa_busca_candidatos_e_nao_a_pagina(tmp_path):
+    """Com reranker, a primeira etapa é filtro; sem ele, já é a resposta."""
+    index = index_com_reranker(tmp_path, [], candidates=30)
+    index.search("prosa qualquer aqui", limit=5, mode="dense")
+    com = index._client.calls[0]["limit"]  # type: ignore[attr-defined]
+
+    index2 = index_com_reranker(tmp_path, [], enabled=False)
+    index2.search("prosa qualquer aqui", limit=5, mode="dense")
+    sem = index2._client.calls[0]["limit"]  # type: ignore[attr-defined]
+    assert com > sem
+
+
+def test_falha_do_reranker_degrada_para_a_primeira_etapa(tmp_path):
+    """Busca degradada é melhor que busca quebrada."""
+    from indexer.reranking import CrossEncoderReranker
+
+    class Explode:
+        def predict(self, *a, **k):
+            raise RuntimeError("HIP out of memory")
+
+    pontos = [ponto_texto("c:1", "a", "um", 0.9), ponto_texto("c:2", "b", "dois", 0.8)]
+    index = index_com_reranker(tmp_path, pontos)
+    index._reranker_obj = CrossEncoderReranker(rerank_config(), encoder=Explode())
+    hits = index.search("prosa qualquer aqui", limit=2, mode="dense")
+    assert [h.doc_id for h in hits] == ["c:1", "c:2"]
+    assert index.last_reranked is False
+
+
+def test_reranker_desligado_por_ambiente(monkeypatch):
+    monkeypatch.setenv("RERANK_ENABLED", "0")
+    monkeypatch.setenv("JIRA_URL", "https://jira.exemplo")
+    monkeypatch.setenv("JIRA_PAT", "x")
+    monkeypatch.setenv("JIRA_PROJECTS", "OPS")
+    cfg = load_config(dotenv=False)
+    assert cfg.rerank.enabled is False
+
+
+def test_rerank_pode_ser_desligado_na_chamada(tmp_path):
+    pontos = [ponto_texto("c:1", "a", "um", 0.9)]
+    index = index_com_reranker(tmp_path, pontos)
+    index.search("prosa qualquer aqui", limit=2, mode="dense", rerank=False)
+    assert index.last_reranked is False

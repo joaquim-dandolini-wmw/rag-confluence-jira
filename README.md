@@ -422,8 +422,13 @@ já existiam, lendo só o document store.
 intfloat/multilingual-e5-large   1024 dim, fp16, normalizado em L2
 prefixos                          "query: " na consulta, "passage: " no documento
 fusão                             RRF ponderada no servidor (prefetch + RrfQuery)
+reranker                          BAAI/bge-reranker-v2-m3, cross-encoder, fp16
 modos                             auto | bm25 | dense | hybrid   (padrão: auto)
 ```
+
+A busca tem duas etapas: a primeira filtra candidatos no índice (BM25, denso ou
+fusão), a segunda reordena esses candidatos com um cross-encoder que lê consulta
+e documento juntos.
 
 Carga inicial medida na RX 6900 XT: **148.085 fatias em 18 minutos**, 135,6
 fatias/s, zero falhas. Segunda execução processa 0 documentos.
@@ -485,10 +490,41 @@ instrumento** (`indexer/index.py:classify_query`):
 Siglas curtas da própria base (`APP`, `SQL`, `ERP`) não são confundidas com
 chave. `--mode` continua disponível para comparação A/B.
 
-**O que ainda falta.** Dois dos três alvos de sinônimo ficam nas posições 13 e
-28 — dentro do índice, fora de uma página de 10 resultados. Um **reranker
-cross-encoder** sobre os candidatos os traria para o topo: ele lê consulta e
-documento juntos. Cabe com folga na mesma GPU (o e5 usa 1,87 GiB dos 15,98 GiB
-medidos). É o próximo passo natural, fora do escopo da Fase 2.
+### O reranker: segunda etapa
+
+O bi-encoder vetoriza consulta e documento **separadamente**, então o vetor do
+documento tem que servir para toda consulta possível. Por isso ele acha o
+documento por sinônimo mas não o coloca no topo. O cross-encoder lê os dois
+**juntos** num forward só — muito mais preciso, e caro, por isso roda apenas
+sobre os 30 candidatos que a primeira etapa filtrou:
+
+| consulta em sinônimo puro | sem reranker | com reranker |
+|---|---|---|
+| "dados da fatura para pagamento em banco" | 8º | **3º** |
+| "administração de celulares dos vendedores" | fora da página | **5º** |
+| "falha na compilação do aplicativo móvel" | fora | fora |
+
+Custo: **475 ms** na consulta em prosa, contra 19 ms sem reranker. VRAM com os
+dois modelos carregados: **2,91 GiB de pico** dos 15,98 GiB.
+
+Duas decisões que só apareceram medindo:
+
+- **consulta com identificador não passa pelo reranker.** O cross-encoder julga
+  relevância semântica, e `VENDAS-14993` quase não tem semântica: com ele, o
+  alvo caía de 1º para 2º e `PRUPSYNCPRODUTOS` saía do top-5. Quem digita a
+  chave exata quer exatidão, e disso o BM25 já dá conta;
+- **mais candidatos piora.** De 20 para 80 candidatos, o alvo caiu da posição 3
+  para a 5 — mais competição dilui. 20 e 30 empatam; 30 fica pela margem.
+
+Falha do reranker degrada para a ordem da primeira etapa, com aviso no log, em
+vez de quebrar a busca.
+
+**O que ainda não fecha.** O terceiro alvo continua fora, e agora sabemos por
+quê: ele **está** entre os candidatos, na posição 28, então o cross-encoder o vê
+e decide que não é bom o suficiente para "falha na compilação do aplicativo
+móvel". Não é falha de recuperação, é julgamento de relevância — a base nunca
+escreve "compilação"; ela diz "gerar o app" e "gerar carga". Fechar isso pede
+vocabulário do domínio (um dicionário de sinônimos na consulta, ou fine-tuning),
+não mais um modelo genérico.
 
 Detalhes de infraestrutura, versões exatas e medições: **[SETUP.md](SETUP.md)**.

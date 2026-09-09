@@ -571,10 +571,27 @@ estrutural no RRF: um documento presente nas duas listas bate um presente em só
 uma, e elevar o peso não inverte isso sem destruir o ganho de sinônimo
 (verificado até 12:1). O modo `auto` contorna roteando, não fundindo.
 
-O que ainda falta de verdade: dois dos três alvos de sinônimo ficam nas posições
-13 e 28 — dentro do índice, fora de uma página de 10. Fecha com **reranker
-cross-encoder** sobre os candidatos. Cabe na mesma GPU: o e5 usa 1,87 GiB dos
-15,98 GiB. Fora do escopo da Fase 2.
+### Reranker cross-encoder
+
+```
+BAAI/bge-reranker-v2-m3   2,2 GB em models/reranker   fp16, 30 candidatos
+```
+
+Resolve o que a fusão não resolvia: o alvo de sinônimo sai da posição 8 para a 3,
+e outro sai de fora-da-página para a 5. Custo de 475 ms na consulta em prosa.
+VRAM com e5 e reranker carregados: **2,91 GiB de pico** dos 15,98 GiB — a
+estimativa de ~3,5 GiB da seção 7 estava conservadora, e sobra espaço.
+
+Duas calibrações medidas, as duas contraintuitivas:
+
+- consulta com identificador **não** passa pelo reranker: ele derrubava
+  `VENDAS-14993` de 1º para 2º e tirava `PRUPSYNCPRODUTOS` do top-5;
+- **mais candidatos piora**: de 20 para 80, o alvo caiu de 3º para 5º.
+
+O terceiro alvo de sinônimo continua fora, e agora com diagnóstico: está entre
+os candidatos na posição 28, ou seja o cross-encoder o vê e o rejeita. É
+julgamento de relevância, não falha de busca — a base não usa a palavra
+"compilação". Fechar pede vocabulário do domínio, não outro modelo genérico.
 
 ---
 

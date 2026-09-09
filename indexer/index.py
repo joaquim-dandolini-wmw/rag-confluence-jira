@@ -20,7 +20,7 @@ import os
 import re
 import time
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -36,9 +36,11 @@ from config import (
     SEARCH_MODES,
     SPARSE_VECTOR_NAME,
     EmbeddingConfig,
+    RerankConfig,
 )
 from indexer.chunking import Chunk
 from indexer.embeddings import DenseEmbedder
+from indexer.reranking import CrossEncoderReranker
 from store.documents import Document
 
 LOG = logging.getLogger("indexer.index")
@@ -193,6 +195,8 @@ class KnowledgeIndex:
         timeout: int = 60,
         embedding: EmbeddingConfig | None = None,
         embedder: DenseEmbedder | None = None,
+        rerank: RerankConfig | None = None,
+        reranker: CrossEncoderReranker | None = None,
     ) -> None:
         self.collection = collection
         self._client = QdrantClient(url=qdrant_url, timeout=timeout)
@@ -205,6 +209,12 @@ class KnowledgeIndex:
         # sabe qual dos três rodou, e essa informação é o que permite a
         # comparação A/B e o diagnóstico de um resultado ruim.
         self.last_mode: str | None = None
+        self._rerank_cfg = rerank
+        self._reranker_obj = reranker
+        # Se a última busca passou pelo cross-encoder. Uma falha do reranker
+        # degrada para a ordem da primeira etapa em vez de quebrar a busca, e
+        # é aqui que isso fica visível.
+        self.last_reranked: bool = False
 
     def close(self) -> None:
         self._client.close()
@@ -458,6 +468,7 @@ class KnowledgeIndex:
         bm25_weight: float = DEFAULT_RRF_WEIGHT_BM25,
         dense_weight: float = DEFAULT_RRF_WEIGHT_DENSE,
         rrf_k: int = DEFAULT_RRF_K,
+        rerank: bool | None = None,
     ) -> list[SearchHit]:
         if mode not in SEARCH_MODES:
             raise IndexError_(
@@ -471,14 +482,28 @@ class KnowledgeIndex:
             LOG.debug("modo escolhido pelo auto", extra={"modo": mode})
         self.last_mode = mode
 
+        # Consulta lexical não passa pelo reranker. Medido: o cross-encoder
+        # julga relevância semântica do par, e um identificador quase não tem
+        # semântica - "VENDAS-14993" caiu de 1º para 2º e "PRUPSYNCPRODUTOS"
+        # saiu do top-5. Quando o usuário digita a chave exata, o que ele quer
+        # é exatidão, e disso o BM25 já dá conta.
+        usar_rerank = self._quer_rerank(rerank) and mode != "bm25"
+        self.last_reranked = usar_rerank
+        # Com reranker, a primeira etapa é um FILTRO, não a resposta: ela traz
+        # candidatos e o cross-encoder decide a ordem. Sem ele, a primeira
+        # etapa já é a resposta.
+        alvo = self._reranker.candidates if usar_rerank else limit
+
         # Sem deduplicar, um documento longo ocupa várias vagas com fatias
         # vizinhas: medido, 3 de 5 resultados vinham de 3 documentos só. Para
         # quem consome (o modelo, via MCP) isso é contexto desperdiçado. Busca-se
-        # mais fundo e devolve-se a MELHOR fatia de cada documento.
+        # mais fundo e devolve-se a MELHOR fatia de cada documento. Deduplicar
+        # ANTES do reranker também evita gastar forward em fatias do mesmo
+        # documento, que é a parte cara da consulta.
         fetch = (
-            min(limit * _DEDUPE_OVERFETCH + _DEDUPE_FLOOR, _DEDUPE_CAP)
+            min(alvo * _DEDUPE_OVERFETCH + _DEDUPE_FLOOR, _DEDUPE_CAP)
             if dedupe_by_document
-            else limit
+            else alvo
         )
 
         conditions = [
@@ -602,9 +627,52 @@ class KnowledgeIndex:
                     labels=tuple(payload.get("labels") or ()),
                 )
             )
-            if len(hits) == limit:
+            if len(hits) == alvo:
                 break
-        return hits
+
+        if not usar_rerank:
+            return hits
+        return self._aplica_rerank(query, hits, limit)
+
+    # -- reranking ---------------------------------------------------------
+
+    def _quer_rerank(self, pedido: bool | None) -> bool:
+        if pedido is False:
+            return False
+        if self._reranker is None and self._rerank_cfg is None:
+            return False
+        if pedido is True:
+            return True
+        return self._reranker.enabled if self._reranker else bool(
+            self._rerank_cfg and self._rerank_cfg.enabled
+        )
+
+    @property
+    def _reranker(self) -> CrossEncoderReranker | None:
+        if self._reranker_obj is None and self._rerank_cfg is not None:
+            self._reranker_obj = CrossEncoderReranker(self._rerank_cfg)
+        return self._reranker_obj
+
+    def _aplica_rerank(
+        self, query: str, hits: list[SearchHit], limit: int
+    ) -> list[SearchHit]:
+        reranker = self._reranker
+        if reranker is None:
+            return hits[:limit]
+        try:
+            ordenados = reranker.rerank(
+                query, hits, text_of=lambda hit: hit.text, limit=limit
+            )
+        except Exception as exc:  # noqa: BLE001 - busca degradada é melhor que busca quebrada
+            LOG.warning(
+                "reranker falhou, devolvendo a ordem da primeira etapa",
+                extra={"erro": str(exc), "candidatos": len(hits)},
+            )
+            self.last_reranked = False
+            return hits[:limit]
+        # O score passa a ser o do cross-encoder: é ele que define a ordem, e
+        # devolver o score da primeira etapa faria a lista parecer desordenada.
+        return [replace(hit, score=pontos) for hit, pontos in ordenados]
 
     def count(self) -> int:
         return int(self._client.count(self.collection, exact=True).count)
