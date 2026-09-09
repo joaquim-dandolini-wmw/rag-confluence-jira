@@ -44,6 +44,18 @@ DEFAULT_EMBED_BATCH_SIZE: Final[int] = 16
 
 SEARCH_MODES: Final[tuple[str, ...]] = ("bm25", "dense", "hybrid", "auto")
 
+# Transporte do servidor MCP.
+#   stdio            um processo por cliente, alcançado por SSH. Autenticação é
+#                    a chave SSH, e nada escuta na rede.
+#   streamable-http  um serviço só, alcançado por URL. Sem chave por pessoa, e
+#                    também sem identificação de quem perguntou o quê.
+MCP_TRANSPORTS: Final[tuple[str, ...]] = ("stdio", "streamable-http", "sse")
+# 127.0.0.1 de propósito: o padrão do CÓDIGO não expõe nada. Quem quer atender
+# a rede põe 0.0.0.0 no .env, deliberadamente, e cuida do firewall.
+DEFAULT_MCP_HOST: Final[str] = "127.0.0.1"
+DEFAULT_MCP_PORT: Final[int] = 8765
+DEFAULT_MCP_PATH: Final[str] = "/mcp"
+
 # Pesos da fusão RRF, na ordem (bm25, denso). NÃO são iguais de propósito: com
 # peso igual o denso derruba o acerto exato do BM25 em identificador, que é
 # justamente onde o denso não tem o que oferecer. Valores medidos - ver
@@ -223,6 +235,31 @@ class EmbeddingConfig:
 
 
 @dataclass(frozen=True)
+class McpConfig:
+    """Como o servidor MCP é alcançado.
+
+    Trocável por ambiente porque a escolha não é técnica, é de operação: com
+    poucos clientes, stdio por SSH dá autenticação por pessoa e revogação
+    individual; com muitos, HTTP elimina a configuração por pessoa mas passa a
+    atender qualquer um que alcance a porta.
+    """
+
+    transport: str
+    host: str
+    port: int
+    path: str
+    # O SDK valida o cabeçalho Host contra esta lista (proteção contra DNS
+    # rebinding) e recusa o que não estiver nela. Bindar em 0.0.0.0 não basta:
+    # sem o endereço que o cliente digita nesta lista, a requisição é rejeitada.
+    # Aceita curinga de porta ("10.2.1.132:*"), não de host.
+    allowed_hosts: tuple[str, ...]
+
+    @property
+    def url(self) -> str:
+        return f"http://{self.host}:{self.port}{self.path}"
+
+
+@dataclass(frozen=True)
 class RerankConfig:
     """Segunda etapa da busca: reordena o que a primeira trouxe.
 
@@ -249,6 +286,7 @@ class Config:
     allow_model_download: bool
     embedding: EmbeddingConfig
     rerank: RerankConfig
+    mcp: McpConfig
     jira: JiraConfig | None = None
     confluence: ConfluenceConfig | None = None
     _errors: tuple[str, ...] = field(default=(), repr=False)
@@ -276,6 +314,35 @@ class Config:
         if not self._errors:
             return ""
         return "Problemas encontrados:\n" + "\n".join(f"  - {e}" for e in self._errors)
+
+
+def _primary_ipv4() -> str | None:
+    """IP de saída desta máquina, sem enviar pacote nenhum.
+
+    O socket UDP só resolve a rota; não há tráfego. Serve para descobrir o
+    endereço que os clientes da rede vão digitar, sem depender de `ip addr`.
+    """
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("10.255.255.255", 1))
+            return str(sock.getsockname()[0])
+    except OSError:
+        return None
+
+
+def _default_allowed_hosts(bind_host: str) -> tuple[str, ...]:
+    hosts = ["localhost:*", "127.0.0.1:*"]
+    if bind_host not in {"127.0.0.1", "localhost", "0.0.0.0", "::"}:
+        hosts.append(f"{bind_host}:*")
+    if bind_host in {"0.0.0.0", "::"}:
+        # Bind em todas as interfaces: o cliente vai digitar o IP da máquina,
+        # que é o que precisa entrar na lista.
+        proprio = _primary_ipv4()
+        if proprio:
+            hosts.append(f"{proprio}:*")
+    return tuple(dict.fromkeys(hosts))
 
 
 def load_config(*, dotenv: bool = True) -> Config:
@@ -339,6 +406,30 @@ def load_config(*, dotenv: bool = True) -> Config:
         candidates=max(rerank_cand, 1),
         enabled=_env_bool("RERANK_ENABLED", True),
         allow_download=allow_download,
+    )
+
+    mcp_transport = (_env("MCP_TRANSPORT") or "stdio").lower()
+    if mcp_transport not in MCP_TRANSPORTS:
+        errors.append(
+            f"MCP_TRANSPORT={mcp_transport!r} desconhecido. Aceitos: "
+            f"{', '.join(MCP_TRANSPORTS)}."
+        )
+    raw_port = _env("MCP_PORT")
+    try:
+        mcp_port = int(raw_port) if raw_port else DEFAULT_MCP_PORT
+    except ValueError:
+        mcp_port = DEFAULT_MCP_PORT
+        errors.append(f"MCP_PORT={raw_port!r} não é um inteiro.")
+    mcp_host = _env("MCP_HOST") or DEFAULT_MCP_HOST
+    permitidos = _env_list("MCP_ALLOWED_HOSTS")
+    if not permitidos:
+        permitidos = _default_allowed_hosts(mcp_host)
+    mcp = McpConfig(
+        transport=mcp_transport,
+        host=mcp_host,
+        port=mcp_port,
+        path=_env("MCP_PATH") or DEFAULT_MCP_PATH,
+        allowed_hosts=permitidos,
     )
 
     embedding = EmbeddingConfig(
@@ -419,6 +510,7 @@ def load_config(*, dotenv: bool = True) -> Config:
         allow_model_download=allow_download,
         embedding=embedding,
         rerank=rerank,
+        mcp=mcp,
         jira=jira,
         confluence=confluence,
         _errors=tuple(errors),

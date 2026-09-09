@@ -1104,3 +1104,75 @@ def test_rerank_pode_ser_desligado_na_chamada(tmp_path):
     index = index_com_reranker(tmp_path, pontos)
     index.search("prosa qualquer aqui", limit=2, mode="dense", rerank=False)
     assert index.last_reranked is False
+
+
+# --------------------------------------------------------------------------
+# transporte do servidor MCP
+# --------------------------------------------------------------------------
+
+def env_minimo(monkeypatch):
+    monkeypatch.setenv("JIRA_URL", "https://jira.exemplo")
+    monkeypatch.setenv("JIRA_PAT", "x")
+    monkeypatch.setenv("JIRA_PROJECTS", "OPS")
+
+
+def test_transporte_padrao_e_stdio(monkeypatch):
+    """O padrão do código não expõe nada na rede."""
+    env_minimo(monkeypatch)
+    cfg = load_config(dotenv=False)
+    assert cfg.mcp.transport == "stdio"
+    assert cfg.mcp.host == "127.0.0.1"
+
+
+def test_transporte_invalido_e_recusado(monkeypatch):
+    env_minimo(monkeypatch)
+    monkeypatch.setenv("MCP_TRANSPORT", "grpc")
+    cfg = load_config(dotenv=False)
+    assert any("MCP_TRANSPORT" in erro for erro in cfg._errors)
+
+
+def test_http_monta_a_url_que_o_cliente_usa(monkeypatch):
+    env_minimo(monkeypatch)
+    monkeypatch.setenv("MCP_TRANSPORT", "streamable-http")
+    monkeypatch.setenv("MCP_HOST", "10.2.1.132")
+    monkeypatch.setenv("MCP_PORT", "8765")
+    cfg = load_config(dotenv=False)
+    assert cfg.mcp.url == "http://10.2.1.132:8765/mcp"
+
+
+def test_bind_em_todas_as_interfaces_aceita_o_ip_da_maquina(monkeypatch):
+    """O SDK recusa Host que não esteja na lista.
+
+    Bindar em 0.0.0.0 não basta: sem o endereço que o cliente digita, a
+    requisição é rejeitada por proteção contra DNS rebinding.
+    """
+    env_minimo(monkeypatch)
+    monkeypatch.setenv("MCP_HOST", "0.0.0.0")
+    cfg = load_config(dotenv=False)
+    assert "localhost:*" in cfg.mcp.allowed_hosts
+    # o IP próprio entra na lista, seja qual for
+    assert any(
+        h not in ("localhost:*", "127.0.0.1:*") for h in cfg.mcp.allowed_hosts
+    ), cfg.mcp.allowed_hosts
+
+
+def test_host_explicito_entra_na_lista(monkeypatch):
+    env_minimo(monkeypatch)
+    monkeypatch.setenv("MCP_HOST", "10.2.1.132")
+    cfg = load_config(dotenv=False)
+    assert "10.2.1.132:*" in cfg.mcp.allowed_hosts
+
+
+def test_lista_de_hosts_pode_ser_fixada(monkeypatch):
+    env_minimo(monkeypatch)
+    monkeypatch.setenv("MCP_HOST", "0.0.0.0")
+    monkeypatch.setenv("MCP_ALLOWED_HOSTS", "kb.interno:*,10.9.9.9:8765")
+    cfg = load_config(dotenv=False)
+    assert cfg.mcp.allowed_hosts == ("kb.interno:*", "10.9.9.9:8765")
+
+
+def test_porta_nao_numerica_e_recusada(monkeypatch):
+    env_minimo(monkeypatch)
+    monkeypatch.setenv("MCP_PORT", "oitomilesetecentos")
+    cfg = load_config(dotenv=False)
+    assert any("MCP_PORT" in erro for erro in cfg._errors)

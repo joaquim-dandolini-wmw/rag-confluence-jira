@@ -420,13 +420,45 @@ def main() -> int:
     LOG.info(
         "servidor MCP iniciando",
         extra={
+            "transport": cfg.mcp.transport,
             "qdrant": cfg.qdrant_url,
             "collection": cfg.collection,
             "jira": bool(cfg.jira),
             "confluence": bool(cfg.confluence),
         },
     )
-    server.run(transport="stdio")
+    if cfg.mcp.transport == "stdio":
+        # Um processo por cliente, falando pela stdin/stdout. Nada escuta na
+        # rede; quem alcança de fora usa SSH como túnel.
+        server.run(transport="stdio")
+        return 0
+
+    LOG.warning(
+        "servidor MCP escutando na rede SEM autenticação: quem alcançar a "
+        "porta lê todo o conteúdo indexado, sem as permissões por espaço do "
+        "Confluence. Restrinja no firewall.",
+        extra={"url": cfg.mcp.url, "transport": cfg.mcp.transport,
+               "hosts_aceitos": list(cfg.mcp.allowed_hosts)},
+    )
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    seguranca = TransportSecuritySettings(
+        allowed_hosts=list(cfg.mcp.allowed_hosts),
+        allowed_origins=list(cfg.mcp.allowed_hosts),
+    )
+    # O nome do argumento do caminho difere por transporte.
+    caminho = (
+        {"streamable_http_path": cfg.mcp.path}
+        if cfg.mcp.transport == "streamable-http"
+        else {"sse_path": cfg.mcp.path}
+    )
+    server.run(
+        transport=cfg.mcp.transport,
+        host=cfg.mcp.host,
+        port=cfg.mcp.port,
+        transport_security=seguranca,
+        **caminho,
+    )
     return 0
 
 

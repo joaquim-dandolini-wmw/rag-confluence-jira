@@ -193,8 +193,23 @@ anexos contados, tempo total e média por `getPage`.
 
 ## Servidor MCP
 
-> Para **instalar no seu cliente de IA** (Claude Code, Claude Desktop e outros),
-> o guia passo a passo é o **[ACESSO-MCP.md](ACESSO-MCP.md)**.
+> Para **conectar seu cliente de IA** (Claude Code, Claude Desktop e outros),
+> o guia é o **[ACESSO-MCP.md](ACESSO-MCP.md)**.
+
+Dois transportes, escolhidos por `MCP_TRANSPORT`:
+
+| | `stdio` (padrão do código) | `streamable-http` |
+|---|---|---|
+| como o cliente alcança | um processo por cliente, via SSH | uma URL |
+| autenticação | chave SSH, revogável por pessoa | nenhuma (ou token, se configurado) |
+| serviço escutando na rede | nenhum | uma porta |
+| modelos na GPU | recarregados a cada sessão (~6 s) | carregados uma vez, ~260 ms depois |
+| identifica quem perguntou | sim, pelo usuário SSH | não |
+
+O `stdio` é o mais restritivo e o padrão do código, que não expõe nada. Para
+`stdio` com mais de uma pessoa, use `deploy/mcp-stdio.sh` como *forced command*
+no `authorized_keys`: ele tranca a chave no servidor MCP, sem shell, sem túnel e
+sem leitura do `.env`.
 
 ```bash
 python -m mcp_server.server        # transporte stdio

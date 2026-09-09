@@ -1,6 +1,6 @@
 # Como usar a busca no seu cliente de IA
 
-Guia para instalar o servidor MCP `atlassian-kb` no Claude e em outros clientes.
+Guia para conectar o servidor MCP `atlassian-kb` no Claude e em outros clientes.
 Todos os comandos daqui foram **executados e validados** nesta configuração.
 
 O que você ganha: quatro ferramentas para consultar o Jira e o Confluence
@@ -15,117 +15,55 @@ internos direto do chat, com link clicável em todo resultado.
 
 ---
 
-## Antes de começar
+## O endereço
 
-| requisito | valor |
-|---|---|
-| servidor, rede da empresa | **`10.2.1.132`** — usuário `joaquimdp` |
-| porta | 22/tcp, liberada para `10.0.0.0/8` (empresa) e `192.168.10.0/24` |
-| autenticação | **chave SSH** — senha não serve, o cliente de IA não tem como digitar |
-
-Você precisa de um cliente SSH. No **Windows 10/11 e no macOS já vem instalado**;
-no Linux é o pacote `openssh`.
-
-Teste primeiro se você alcança a máquina:
-
-```bash
-ping 10.2.1.132
+```
+http://10.2.1.132:8765/mcp
 ```
 
-> **O IP é DHCP.** Se a máquina reiniciar ou trocar de rede, ele muda e todos os
-> clientes param de conectar. Reserve o IP no DHCP, ou use o nome
-> `cachyos-x8664` se o DNS interno resolver.
->
-> A máquina precisa estar com o **cabo de rede conectado**. Só no Wi-Fi ela cai
-> em `10.2.1.132`, que o pessoal da empresa não alcança.
+É só isso. **Não precisa de chave, senha, token nem instalar nada.** Basta estar
+na rede da empresa.
+
+Teste antes de configurar o cliente:
+
+```bash
+curl -sS -o /dev/null -w "%{http_code}\n" http://10.2.1.132:8765/mcp
+```
+
+Qualquer resposta HTTP (inclusive `400` ou `406`) significa que você alcança o
+servidor — o erro é esperado, porque o `curl` não fala MCP. Se der
+`Connection refused` ou travar, veja a seção de problemas no fim.
 
 ---
 
-## Passo 1 — criar sua chave SSH
-
-Na **sua** máquina, não no servidor. Uma vez só, para sempre.
-
-**Windows (PowerShell)** · **macOS** · **Linux** — o comando é o mesmo:
-
-```bash
-ssh-keygen -t ed25519 -C "seu.nome@wmw.com.br"
-```
-
-Aceite o caminho padrão apertando Enter. A senha (passphrase) pode ficar vazia —
-se você puser uma, o cliente de IA vai travar pedindo a senha a cada conexão, a
-não ser que você use um agente de chaves.
-
-Isso cria dois arquivos. O `.pub` é público e pode ser enviado por chat; o outro
-é a sua chave privada e **nunca sai da sua máquina**:
-
-```
-~/.ssh/id_ed25519.pub     <- este você envia
-~/.ssh/id_ed25519         <- este NUNCA
-```
-
-## Passo 2 — autorizar sua chave no servidor
-
-**Linux e macOS:**
-
-```bash
-ssh-copy-id joaquimdp@10.2.1.132
-```
-
-Ele vai pedir a senha do `joaquimdp` uma única vez.
-
-**Windows (PowerShell)** — não existe `ssh-copy-id`, use isto:
-
-```powershell
-type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh joaquimdp@10.2.1.132 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
-```
-
-**Sem senha em mãos:** mande o conteúdo do seu `.pub` para o administrador da
-máquina, que acrescenta em `~/.ssh/authorized_keys`.
-
-## Passo 3 — testar a conexão
-
-```bash
-ssh joaquimdp@10.2.1.132 "hostname"
-```
-
-Tem que responder `cachyos-x8664` **sem pedir senha**. Se pedir senha, a chave
-não foi autorizada — volte ao passo 2. Não siga adiante enquanto isso não passar:
-o cliente de IA não tem como responder a um pedido de senha.
-
-## Passo 4 — instalar no cliente
-
-### Claude Code (linha de comando)
+## Claude Code (linha de comando)
 
 Um comando:
 
 ```bash
-claude mcp add atlassian-kb -- ssh joaquimdp@10.2.1.132 "cd ~/Documentos/rag && PYTHONPATH=/home/joaquimdp/Documentos/rag .venv/bin/python -m mcp_server.server"
+claude mcp add --transport http atlassian-kb http://10.2.1.132:8765/mcp
 ```
 
 Confira:
 
 ```bash
 claude mcp list
-# atlassian-kb: ssh joaquimdp@10.2.1.132 ... - ✔ Connected
+# atlassian-kb: http://10.2.1.132:8765/mcp (HTTP) - ✔ Connected
 ```
 
-O padrão instala **só no projeto onde você rodou o comando**. Para ter a busca
-em qualquer pasta, acrescente `-s user`:
+Isso instala **só no projeto onde você rodou o comando**. Para ter a busca em
+qualquer pasta, use `-s user`:
 
 ```bash
-claude mcp add atlassian-kb -s user -- ssh joaquimdp@10.2.1.132 "cd ~/Documentos/rag && PYTHONPATH=/home/joaquimdp/Documentos/rag .venv/bin/python -m mcp_server.server"
+claude mcp add -s user --transport http atlassian-kb http://10.2.1.132:8765/mcp
 ```
-
-Existe também `-s project`, que grava num `.mcp.json` versionado junto do
-repositório — útil se o time quiser a configuração no próprio projeto em vez de
-cada um instalar na sua máquina.
 
 Para remover: `claude mcp remove atlassian-kb`.
 
-### Claude Desktop (aplicativo)
+## Claude Desktop (aplicativo)
 
 Abra **Settings → Developer → Edit Config**, que abre o
-`claude_desktop_config.json`. Se preferir editar na mão, ele fica em:
+`claude_desktop_config.json`. Se preferir editar na mão:
 
 ```
 Windows   %APPDATA%\Claude\claude_desktop_config.json
@@ -138,44 +76,20 @@ Acrescente o bloco `atlassian-kb` dentro de `mcpServers`:
 {
   "mcpServers": {
     "atlassian-kb": {
-      "command": "ssh",
-      "args": [
-        "joaquimdp@10.2.1.132",
-        "cd ~/Documentos/rag && PYTHONPATH=/home/joaquimdp/Documentos/rag .venv/bin/python -m mcp_server.server"
-      ]
+      "type": "http",
+      "url": "http://10.2.1.132:8765/mcp"
     }
   }
 }
 ```
 
-Se já existirem outros servidores no arquivo, só acrescente a chave
-`"atlassian-kb"` ao lado deles — não substitua o `mcpServers` inteiro. Reinicie
-o aplicativo depois de salvar.
+Se já existirem outros servidores, só acrescente a chave `"atlassian-kb"` ao
+lado deles — não substitua o `mcpServers` inteiro. Reinicie o aplicativo.
 
-### Outros clientes
+## Outros clientes
 
-Qualquer cliente que aceite MCP por **stdio** funciona: o padrão é sempre
-`command` = `ssh` e o resto como argumentos. Não há servidor HTTP para apontar.
-
----
-
-## Uma armadilha de aspas que vale conhecer
-
-O comando desta documentação usa o caminho **literal**
-`/home/joaquimdp/Documentos/rag`, e não `$HOME/Documentos/rag`, de propósito.
-
-Com aspas duplas, o shell da **sua** máquina substitui `$HOME` antes de mandar a
-linha para o servidor:
-
-```bash
-# ERRADO se digitado num terminal: o $HOME é o SEU, não o do servidor
-ssh joaquimdp@10.2.1.132 "PYTHONPATH=$HOME/Documentos/rag ..."
-#   vira PYTHONPATH=/Users/seu.nome/Documentos/rag   -> o servidor não acha nada
-```
-
-Como o pessoal usa Windows e macOS, o caminho literal evita o problema em todos
-os casos. Se preferir usar `$HOME`, aspas **simples** também resolvem, porque aí
-a expansão acontece no servidor.
+Qualquer cliente que aceite MCP por **HTTP** funciona: aponte para a URL. Alguns
+chamam esse transporte de *streamable HTTP*, outros só de *HTTP*.
 
 ---
 
@@ -196,13 +110,15 @@ pagamento em banco" encontra a página que fala em "boleto bancário".
 
 Duas coisas que vale saber:
 
-- **a primeira pergunta de cada sessão demora ~6 segundos**, porque o servidor
-  carrega os modelos na GPU. As seguintes levam de 0,1 a 0,6 segundo;
+- **velocidade:** a primeira pergunta depois de o servidor subir leva ~6 s,
+  porque ele carrega os modelos na GPU. Depois disso fica em **~260 ms** em
+  prosa e **~5 ms** em identificador, para todo mundo — os modelos ficam
+  carregados no serviço;
 - **contagem, listagem e filtro por status não saem da busca.** O índice é
   atualizado por cron (Jira a cada 15 min, Confluence de madrugada), então tem
-  atraso. Para "quantos bugs abertos" o cliente vai usar `search_jira_jql`, que
-  fala com o Jira ao vivo. Isso já está escrito no contrato das ferramentas; você
-  não precisa escolher.
+  atraso. Para "quantos bugs abertos" o cliente usa `search_jira_jql`, que fala
+  com o Jira ao vivo. Isso já está no contrato das ferramentas; você não precisa
+  escolher.
 
 Todo resultado traz a URL de origem — página do Confluence ou issue em
 `/browse/`. Peça para o modelo citar o link.
@@ -213,45 +129,89 @@ Todo resultado traz a URL de origem — página do Confluence ou issue em
 
 | sintoma | causa provável e o que fazer |
 |---|---|
-| `Permission denied (publickey)` | a chave não está autorizada. Refaça o passo 2 e confira o passo 3 |
-| pede senha | mesma coisa. O cliente de IA não digita senha; a chave é obrigatória |
-| `Connection timed out` | o IP mudou, ou o cabo de rede da máquina caiu. Confirme com `ping 10.2.1.132` |
-| `Connection refused` | o `sshd` do servidor caiu: `systemctl status sshd` |
-| `✔ Connected` mas a busca dá erro | o Qdrant não está no ar: `docker compose up -d` no servidor |
-| `Failed to connect` sem detalhe | rode o comando do passo 3 na mão; o erro do SSH aparece ali |
-| a primeira busca estoura o tempo | é a carga dos modelos. Aumente o timeout do cliente ou repita |
+| `Connection refused` | o serviço caiu. No servidor: `systemctl status rag-mcp` |
+| a conexão trava sem responder | você está fora da rede interna, ou o IP mudou. Confirme com `ping 10.2.1.132` |
+| erro de *Host* não permitido | o IP da máquina mudou. Veja "quando o IP muda" |
+| `Connected` mas a busca dá erro | o Qdrant não está no ar. No servidor: `docker compose up -d` |
+| a primeira busca estoura o tempo | é a carga dos modelos. Repita, ou aumente o timeout do cliente |
 
 Diagnóstico no servidor, do mais rápido ao mais completo:
 
 ```bash
+systemctl status rag-mcp
+journalctl -u rag-mcp -n 30
+
 cd ~/Documentos/rag
 PYTHONPATH=$PWD .venv/bin/python -m indexer.sync status
 PYTHONPATH=$PWD .venv/bin/python -m indexer.sync search "boleto do pedido"
-tail -20 logs/sync-jira.log
 ```
 
 O `status` tem que mostrar `pendentes idx: 0`, `pendentes denso: 0` e o mesmo
 número em `pontos` e `pontos c/ denso`.
 
----
+### Quando o IP muda
 
-## Segurança, em uma tela
+O `10.2.1.132` vem de DHCP. Se a máquina reiniciar ou trocar de rede, **todos os
+clientes param juntos** e é preciso reconfigurar cada um. Duas providências:
 
-- o acesso ao Jira e ao Confluence é **somente leitura**, sempre;
-- o Qdrant escuta **só em `127.0.0.1`** e não é exposto na rede;
-- o MCP **não sobe serviço de rede**: fala por stdio dentro do túnel SSH;
-- a porta 22 está liberada apenas para a rede interna (`10.0.0.0/8` e
-  `192.168.10.0/24`), nunca para a internet;
-- a autenticação é chave SSH, revogável tirando a linha correspondente de
-  `~/.ssh/authorized_keys` no servidor;
-- o índice contém conteúdo interno dos espaços e projetos configurados. Quem tem
-  acesso ao MCP vê tudo que está indexado, **sem** as permissões por espaço do
-  Confluence. O escopo do que entra no índice está em `.env`
-  (`CONFLUENCE_SPACES` e `JIRA_PROJECTS`) e é deliberadamente explícito.
+- reservar o IP no DHCP, ou usar um nome que o DNS interno resolva;
+- a máquina precisa estar com o **cabo de rede conectado**. Só no Wi-Fi ela cai
+  em outro endereço, que ninguém da empresa alcança.
 
-Para tirar o acesso de alguém, remova a chave dele:
+O servidor descobre o próprio IP ao subir e só aceita requisições endereçadas a
+ele — é a proteção contra DNS rebinding do SDK. Depois de trocar de IP, reinicie
+o serviço para ele reaprender:
 
 ```bash
-ssh joaquimdp@10.2.1.132
-nano ~/.ssh/authorized_keys     # apague a linha com o comentário dele
+sudo systemctl restart rag-mcp
+```
+
+---
+
+## Segurança — leia antes de divulgar o endereço
+
+O acesso hoje é **aberto na rede interna, sem autenticação**. Foi uma decisão
+consciente para o piloto, e tem consequências que precisam estar claras:
+
+- **quem alcança a porta lê tudo que está indexado**: 8.662 páginas do
+  Confluence e 24.930 issues do Jira, dos espaços e projetos listados no `.env`;
+- **as permissões por espaço do Confluence NÃO são aplicadas.** O índice foi
+  construído por um usuário de serviço, e a busca devolve o que ele via. Se
+  algum espaço indexado tem conteúdo restrito, ele fica legível por qualquer um
+  na rede;
+- **não há registro de quem perguntou o quê.** Sem autenticação, as consultas
+  são anônimas;
+- em compensação, o acesso é **somente leitura** — nenhuma ferramenta escreve no
+  Jira ou no Confluence — e o Qdrant continua em `127.0.0.1`, fora da rede.
+
+O que limita o alcance hoje:
+
+```
+ufw: 8765/tcp  ALLOW  10.0.0.0/8         (rede da empresa)
+     8765/tcp  ALLOW  192.168.10.0/24    (Wi-Fi local)
+     tudo o mais: negado
+```
+
+Não está exposto à internet — mas está exposto a **toda** a rede interna, o que
+inclui qualquer dispositivo nela.
+
+### Se quiser fechar depois
+
+Três caminhos, do mais simples ao mais restritivo:
+
+1. **estreitar o firewall** para a faixa de quem realmente usa, em vez de
+   `10.0.0.0/8` inteiro;
+2. **exigir um token**: o SDK aceita `token_verifier` no servidor e os clientes
+   mandam `Authorization: Bearer ...`. Simples, mas é segredo compartilhado —
+   sem revogação individual;
+3. **voltar para stdio por SSH**, com uma chave por pessoa e revogação
+   individual. O `deploy/mcp-stdio.sh` já existe para isso: é um *forced command*
+   que tranca a chave no servidor MCP — sem shell, sem túnel e sem leitura do
+   `.env`, testado. Bem mais seguro, e configuração por pessoa.
+
+Para desligar tudo agora:
+
+```bash
+sudo systemctl disable --now rag-mcp
+sudo ufw delete allow from 10.0.0.0/8 to any port 8765 proto tcp
 ```
