@@ -62,8 +62,33 @@ Para remover: `claude mcp remove atlassian-kb`.
 
 ## Claude Desktop (aplicativo)
 
+**O `claude mcp add` da seção anterior NÃO serve aqui** — ele configura só o
+Claude Code do terminal. No Desktop são dois caminhos; tente o primeiro, que
+leva 30 segundos, e caia para o segundo se ele recusar.
+
+### Caminho 1 — Connectors (o nativo)
+
+1. `Ctrl+,` para abrir Settings (ou menu ☰ → File → Settings);
+2. **Connectors** na barra lateral;
+3. botão **Add** no canto superior direito → **Add custom connector**;
+4. cole a URL e confirme:
+
+```
+http://10.2.1.132:8765/mcp
+```
+
+**Pode não aceitar.** A documentação da Anthropic pede `https://`, e o nosso
+servidor é `http://` puro numa rede interna. Se o Desktop recusar o endereço ou
+não conectar, use o caminho 2 — não fique insistindo.
+
+### Caminho 2 — ponte local (testado e funcionando)
+
+O arquivo de configuração do Desktop só entende servidor **local**, então usamos
+uma ponte que fala HTTP com o nosso servidor. **Precisa de [Node.js](https://nodejs.org)
+instalado** na sua máquina (`node --version` para conferir).
+
 Abra **Settings → Developer → Edit Config**, que abre o
-`claude_desktop_config.json`. Se preferir editar na mão:
+`claude_desktop_config.json`:
 
 ```
 Windows   %APPDATA%\Claude\claude_desktop_config.json
@@ -76,15 +101,21 @@ Acrescente o bloco `atlassian-kb` dentro de `mcpServers`:
 {
   "mcpServers": {
     "atlassian-kb": {
-      "type": "http",
-      "url": "http://10.2.1.132:8765/mcp"
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://10.2.1.132:8765/mcp", "--allow-http"]
     }
   }
 }
 ```
 
-Se já existirem outros servidores, só acrescente a chave `"atlassian-kb"` ao
-lado deles — não substitua o `mcpServers` inteiro. Reinicie o aplicativo.
+O `--allow-http` é obrigatório: sem ele a ponte recusa endereço que não seja
+`https`. Se já existirem outros servidores no arquivo, só acrescente a chave
+`"atlassian-kb"` ao lado deles — não substitua o `mcpServers` inteiro. Depois de
+salvar, **feche o aplicativo por completo e abra de novo**.
+
+Para confirmar que pegou: clique no indicador de anexos no canto inferior
+esquerdo da caixa de mensagem, passe o mouse em **Connectors** e veja se
+`atlassian-kb` aparece com as quatro ferramentas.
 
 ## Outros clientes
 
@@ -134,8 +165,17 @@ Todo resultado traz a URL de origem — página do Confluence ou issue em
 | erro de *Host* não permitido | o IP da máquina mudou. Veja "quando o IP muda" |
 | `Connected` mas a busca dá erro | o Qdrant não está no ar. No servidor: `docker compose up -d` |
 | a primeira busca estoura o tempo | é a carga dos modelos. Repita, ou aumente o timeout do cliente |
+| Desktop recusa a URL em Connectors | é o `http://`. Use o caminho 2, com a ponte |
+| Desktop: `npx` não encontrado | falta Node.js na sua máquina. Instale de nodejs.org |
+| Desktop conecta e nada aparece | feche o aplicativo por completo (não só a janela) e abra de novo |
 
 Diagnóstico no servidor, do mais rápido ao mais completo:
+
+No Desktop, o log de MCP fica em `~/Library/Logs/Claude` (macOS) ou
+`%APPDATA%\Claude\logs` (Windows) — o arquivo `mcp-server-atlassian-kb.log` traz
+o erro exato.
+
+No servidor:
 
 ```bash
 systemctl status rag-mcp
