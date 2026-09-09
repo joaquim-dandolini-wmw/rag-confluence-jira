@@ -1,0 +1,5 @@
+# A RX 6900 XT (Navi 21) saiu do barramento PCI em 2026-09-09 depois de ser
+# acordada da suspensao por uma carga de embedding, e so voltou com
+# desligamento completo. Ver SETUP.md secao 14.
+# Runtime PM desligado nesta placa: ela fica sempre em D0.
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x1002", ATTR{device}=="0x73bf", ATTR{power/control}="on"
