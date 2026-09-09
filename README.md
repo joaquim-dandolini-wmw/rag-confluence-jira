@@ -193,6 +193,9 @@ anexos contados, tempo total e média por `getPage`.
 
 ## Servidor MCP
 
+> Para **instalar no seu cliente de IA** (Claude Code, Claude Desktop e outros),
+> o guia passo a passo é o **[ACESSO-MCP.md](ACESSO-MCP.md)**.
+
 ```bash
 python -m mcp_server.server        # transporte stdio
 ```
