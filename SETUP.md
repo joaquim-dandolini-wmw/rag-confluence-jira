@@ -658,9 +658,16 @@ print(torch.__version__, torch.version.hip)"
 # 6. modelos em cache (seção 5) e Qdrant
 docker compose up -d
 
-# 7. agendamento
+# 7. agendamento e rotação
 sudo pacman -S --needed cronie && sudo systemctl enable --now cronie
 sudo install -m 644 -o root -g root deploy/logrotate.rag /etc/logrotate.d/rag
+crontab deploy/crontab.example      # descomente os jobs antes
+
+# 8. a placa não pode suspender (ver seção 14)
+sudo install -m 644 -o root -g root \
+    deploy/90-amdgpu-no-runtime-pm.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+cat /sys/class/drm/card0/device/power/control    # espere "on"
 ```
 
 Variáveis dos jobs (já registradas no `.env`):
