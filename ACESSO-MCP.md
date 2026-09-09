@@ -81,6 +81,14 @@ http://10.2.1.132:8765/mcp
 servidor é `http://` puro numa rede interna. Se o Desktop recusar o endereço ou
 não conectar, use o caminho 2 — não fique insistindo.
 
+> **Por que não usamos HTTPS, já que resolveria isso?** Porque certificado de CA
+> própria não sai de graça: quem não tiver a CA instalada é **recusado**
+> (`unable to get local issuer certificate`, testado). Isso trocaria "zero
+> configuração" por "instale um arquivo de CA em cada máquina" — pior do que a
+> ponte. O HTTPS só compensa com certificado da **CA da empresa**, em que as
+> máquinas do domínio já confiam; nesse caso o caminho 1 funciona direto e a
+> ponte deixa de ser necessária. Ver "Ligar HTTPS" no fim.
+
 ### Caminho 2 — ponte local (testado e funcionando)
 
 O arquivo de configuração do Desktop só entende servidor **local**, então usamos
@@ -255,3 +263,47 @@ Para desligar tudo agora:
 sudo systemctl disable --now rag-mcp
 sudo ufw delete allow from 10.0.0.0/8 to any port 8765 proto tcp
 ```
+
+---
+
+## Ligar HTTPS (quando houver certificado da empresa)
+
+O servidor já sabe fazer TLS; está desligado porque com certificado de CA
+própria ele **atrapalha** — o cliente que não tem a CA instalada é recusado, e
+os clientes que estavam em HTTP param de conectar na hora em que o TLS sobe.
+Foi testado.
+
+Vale a pena quando o certificado vier da **CA da empresa**: as máquinas do
+domínio já confiam nela, então ninguém instala nada e o Claude Desktop passa a
+conectar direto pela URL, sem a ponte.
+
+**1. Peça o certificado.** O script gera a requisição; a chave privada nunca sai
+da máquina:
+
+```bash
+./deploy/gerar-csr.sh rag.wmw.com.br 10.2.1.132
+```
+
+Entregue o `certs/mcp-empresa.csr` para quem administra a CA. Peça um
+certificado de **servidor** (`serverAuth`) com o nome DNS no SAN.
+
+> Prefira um **nome DNS** ao IP. Além de ser o que os certificados esperam,
+> resolve de vez o problema do IP mudar por DHCP.
+
+**2. Aponte o `.env` para o certificado assinado e reinicie:**
+
+```bash
+MCP_TLS_CERT=/home/joaquimdp/Documentos/rag/certs/mcp-empresa.crt
+MCP_TLS_KEY=/home/joaquimdp/Documentos/rag/certs/mcp-empresa.key
+```
+
+```bash
+sudo systemctl restart rag-mcp
+```
+
+**3. Avise o time**, porque a URL muda de `http://` para `https://` e **todos
+precisam reconfigurar**. Quem usa Desktop pode trocar a ponte pelo caminho 1.
+
+Se quiser testar TLS antes de ter o certificado da empresa, o `mkcert` cria uma
+CA local (`certs/rootCA.pem`) — mas aí cada máquina precisa instalar esse
+arquivo, que é justamente o que se quer evitar.

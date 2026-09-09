@@ -6,3 +6,4 @@ data/
 models/
 .pytest_cache/
 logs/
+certs/

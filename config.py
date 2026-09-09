@@ -248,6 +248,11 @@ class McpConfig:
     host: str
     port: int
     path: str
+    # Caminhos do certificado e da chave. Vazios = HTTP puro. O SDK não expõe
+    # TLS no run(), então quando isto está preenchido o servidor serve o app
+    # com uvicorn diretamente, que tem.
+    tls_cert: Path | None
+    tls_key: Path | None
     # O SDK valida o cabeçalho Host contra esta lista (proteção contra DNS
     # rebinding) e recusa o que não estiver nela. Bindar em 0.0.0.0 não basta:
     # sem o endereço que o cliente digita nesta lista, a requisição é rejeitada.
@@ -255,8 +260,12 @@ class McpConfig:
     allowed_hosts: tuple[str, ...]
 
     @property
+    def scheme(self) -> str:
+        return "https" if self.tls_cert else "http"
+
+    @property
     def url(self) -> str:
-        return f"http://{self.host}:{self.port}{self.path}"
+        return f"{self.scheme}://{self.host}:{self.port}{self.path}"
 
 
 @dataclass(frozen=True)
@@ -424,12 +433,25 @@ def load_config(*, dotenv: bool = True) -> Config:
     permitidos = _env_list("MCP_ALLOWED_HOSTS")
     if not permitidos:
         permitidos = _default_allowed_hosts(mcp_host)
+    cert = _env("MCP_TLS_CERT")
+    key = _env("MCP_TLS_KEY")
+    if bool(cert) != bool(key):
+        errors.append(
+            "MCP_TLS_CERT e MCP_TLS_KEY vão juntos: definir só um deixaria o "
+            "servidor em HTTP puro sem avisar."
+        )
+        cert = key = None
+    for nome, caminho in (("MCP_TLS_CERT", cert), ("MCP_TLS_KEY", key)):
+        if caminho and not Path(caminho).is_file():
+            errors.append(f"{nome}={caminho!r} não existe.")
     mcp = McpConfig(
         transport=mcp_transport,
         host=mcp_host,
         port=mcp_port,
         path=_env("MCP_PATH") or DEFAULT_MCP_PATH,
         allowed_hosts=permitidos,
+        tls_cert=Path(cert) if cert else None,
+        tls_key=Path(key) if key else None,
     )
 
     embedding = EmbeddingConfig(

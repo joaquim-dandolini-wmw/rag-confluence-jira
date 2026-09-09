@@ -446,6 +446,27 @@ def main() -> int:
         allowed_hosts=list(cfg.mcp.allowed_hosts),
         allowed_origins=list(cfg.mcp.allowed_hosts),
     )
+
+    if cfg.mcp.tls_cert and cfg.mcp.tls_key:
+        # O run() do SDK não expõe TLS, então servimos o app dele com uvicorn,
+        # que expõe. Mesmo app, mesma configuração de segurança de transporte.
+        import uvicorn
+
+        app = server.streamable_http_app(
+            streamable_http_path=cfg.mcp.path,
+            transport_security=seguranca,
+            host=cfg.mcp.host,
+        )
+        uvicorn.run(
+            app,
+            host=cfg.mcp.host,
+            port=cfg.mcp.port,
+            ssl_certfile=str(cfg.mcp.tls_cert),
+            ssl_keyfile=str(cfg.mcp.tls_key),
+            log_config=None,
+        )
+        return 0
+
     # O nome do argumento do caminho difere por transporte.
     caminho = (
         {"streamable_http_path": cfg.mcp.path}

@@ -1176,3 +1176,39 @@ def test_porta_nao_numerica_e_recusada(monkeypatch):
     monkeypatch.setenv("MCP_PORT", "oitomilesetecentos")
     cfg = load_config(dotenv=False)
     assert any("MCP_PORT" in erro for erro in cfg._errors)
+
+
+def test_tls_desligado_por_padrao(monkeypatch):
+    """Ligar TLS com CA própria RECUSA o cliente que não tem a CA."""
+    env_minimo(monkeypatch)
+    cfg = load_config(dotenv=False)
+    assert cfg.mcp.tls_cert is None
+    assert cfg.mcp.scheme == "http"
+
+
+def test_tls_exige_certificado_e_chave_juntos(monkeypatch, tmp_path):
+    """Definir só um deixaria o servidor em HTTP puro sem avisar."""
+    env_minimo(monkeypatch)
+    cert = tmp_path / "c.crt"; cert.write_text("x")
+    monkeypatch.setenv("MCP_TLS_CERT", str(cert))
+    cfg = load_config(dotenv=False)
+    assert any("MCP_TLS_KEY" in erro for erro in cfg._errors)
+
+
+def test_tls_com_arquivo_inexistente_e_recusado(monkeypatch):
+    env_minimo(monkeypatch)
+    monkeypatch.setenv("MCP_TLS_CERT", "/nao/existe.crt")
+    monkeypatch.setenv("MCP_TLS_KEY", "/nao/existe.key")
+    cfg = load_config(dotenv=False)
+    assert any("não existe" in erro for erro in cfg._errors)
+
+
+def test_url_vira_https_quando_ha_certificado(monkeypatch, tmp_path):
+    env_minimo(monkeypatch)
+    cert = tmp_path / "c.crt"; cert.write_text("x")
+    key = tmp_path / "c.key"; key.write_text("x")
+    monkeypatch.setenv("MCP_TLS_CERT", str(cert))
+    monkeypatch.setenv("MCP_TLS_KEY", str(key))
+    monkeypatch.setenv("MCP_HOST", "rag.interno")
+    cfg = load_config(dotenv=False)
+    assert cfg.mcp.url == "https://rag.interno:8765/mcp"
