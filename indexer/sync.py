@@ -6,6 +6,7 @@
     python -m indexer.sync embed
     python -m indexer.sync run
     python -m indexer.sync reconcile --only jira
+    python -m indexer.sync scope
     python -m indexer.sync search "boleto do pedido" --mode hybrid
     python -m indexer.sync status
 
@@ -25,12 +26,13 @@ import argparse
 import logging
 import sys
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from config import (
     DEFAULT_EMBED_BATCH_SIZE,
+    ConfluenceConfig,
     EMBED_DEVICES,
     SEARCH_MODES,
     Config,
@@ -94,6 +96,88 @@ def _open_index(
 
 
 # --------------------------------------------------------------------------
+# escopo do Confluence
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ScopeDiff:
+    """O que o escopo tem hoje, o que entrou e o que saiu."""
+
+    scope: tuple[str, ...]
+    entered: tuple[str, ...]
+    left: tuple[str, ...]
+    discovered: bool
+
+    def as_log_fields(self) -> dict[str, Any]:
+        return {
+            "espacos_no_escopo": len(self.scope),
+            "entraram": list(self.entered),
+            "sairam": list(self.left),
+            "descoberto": self.discovered,
+        }
+
+
+def resolve_confluence_scope(
+    conf: ConfluenceConfig, client: ConfluenceClient, store: DocumentStore
+) -> ScopeDiff:
+    """Decide quais espaços indexar e compara com o que já está no store.
+
+    Com CONFLUENCE_SPACES=auto o escopo vem do getSpaces(), que devolve
+    exatamente o que o usuário de serviço enxerga - ou seja, o Confluence já
+    aplicou as permissões de grupo dele. Trocar o usuário de grupo muda o
+    escopo sozinho, sem tocar em arquivo de configuração. Medido nesta
+    instância: timedesenv enxerga 716 espaços, wmw-rag enxerga 30.
+    """
+    if conf.discover:
+        visiveis = {str(e.get("key")) for e in client.get_spaces() if e.get("key")}
+        if not visiveis:
+            # NUNCA tratar lista vazia como "nada no escopo": seria apagar o
+            # índice inteiro por causa de uma falha transitória do XML-RPC.
+            raise ConfluenceAuthError(
+                "getSpaces() devolveu zero espaços. Isso é falha de conexão ou "
+                "de permissão, não escopo vazio - abortando antes de remover "
+                "conteúdo por engano."
+            )
+        escopo = visiveis - set(conf.exclude_spaces)
+    else:
+        escopo = set(conf.spaces)
+
+    no_store = store.confluence_space_keys()
+    return ScopeDiff(
+        scope=tuple(sorted(escopo)),
+        entered=tuple(sorted(escopo - no_store)),
+        left=tuple(sorted(no_store - escopo)),
+        discovered=conf.discover,
+    )
+
+
+def purge_spaces(store: DocumentStore, espacos: Sequence[str]) -> dict[str, int]:
+    """Remove do store o conteúdo de espaços que saíram do escopo.
+
+    Sem isto, um espaço tirado do escopo continuaria pesquisável para sempre:
+    o extract só visita o que está no escopo, então ninguém mais olharia para
+    aquele conteúdo. O delete() do store também limpa o confluence_versions,
+    então um espaço que volte é reextraído do zero.
+    """
+    total = 0
+    for space_key in espacos:
+        doc_ids = sorted(
+            store.list_doc_ids(source=SOURCE_CONFLUENCE, space_key=space_key)
+        )
+        if not doc_ids:
+            continue
+        store.delete(doc_ids)
+        store.queue_index_deletions(doc_ids)
+        store.commit()
+        total += len(doc_ids)
+        LOG.info(
+            "espaço fora do escopo, conteúdo removido",
+            extra={"space_key": space_key, "documentos": len(doc_ids)},
+        )
+    return {"espacos": len(espacos), "documentos": total}
+
+
+# --------------------------------------------------------------------------
 # extração
 # --------------------------------------------------------------------------
 
@@ -114,7 +198,16 @@ def extract_confluence(
         extractor = ConfluenceExtractor(client, conf)
         known_versions = store.confluence_versions()
 
-        for space_key in conf.spaces:
+        diff = resolve_confluence_scope(conf, client, store)
+        LOG.info("escopo do Confluence resolvido", extra=diff.as_log_fields())
+        totals["escopo"] = len(diff.scope)
+        totals["espacos_novos"] = len(diff.entered)
+        if diff.left:
+            removidos = purge_spaces(store, diff.left)
+            totals["removidos"] += removidos["documentos"]
+            totals["espacos_removidos"] = removidos["espacos"]
+
+        for space_key in diff.scope:
             result = SpaceExtraction(space_key=space_key)
             written = 0
             try:
@@ -529,7 +622,7 @@ def reconcile_confluence(cfg: Config, store: DocumentStore) -> dict[str, Any]:
     conf = cfg.require_confluence()
     live: set[str] = set()
     with ConfluenceClient(conf) as client:
-        for space_key in conf.spaces:
+        for space_key in resolve_confluence_scope(conf, client, store).scope:
             for summary in client.get_page_summaries(space_key):
                 live.add(f"confluence:page:{summary.get('id')}")
             for summary in client.get_blog_summaries(space_key):
@@ -646,8 +739,64 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None, help="liga/desliga o reranker (padrão: RERANK_ENABLED)",
     )
 
+    scope_cmd = subparsers.add_parser(
+        "scope", help="mostra quais espaços entraram e saíram do escopo"
+    )
+    scope_cmd.add_argument(
+        "--apply", action="store_true",
+        help="remove o conteúdo dos espaços que saíram (o padrão só analisa)",
+    )
+
     subparsers.add_parser("status", help="mostra o estado do store e do índice")
     return parser
+
+
+def _run_scope(cfg: Config, store: DocumentStore, aplicar: bool) -> None:
+    conf = cfg.require_confluence()
+    with ConfluenceClient(conf) as client:
+        diff = resolve_confluence_scope(conf, client, store)
+
+    origem = "getSpaces() do usuário" if diff.discovered else "CONFLUENCE_SPACES"
+    print(f"origem do escopo:  {origem}")
+    print(f"usuário:           {conf.user}")
+    print(f"espaços no escopo: {len(diff.scope)}")
+    if conf.exclude_spaces:
+        print(f"excluídos à mão:   {', '.join(conf.exclude_spaces)}")
+
+    no_store = store.confluence_space_keys()
+    mantidos = sorted(no_store & set(diff.scope))
+    print("")
+    print(f"JÁ INDEXADOS, seguem ({len(mantidos)}):")
+    for k in mantidos:
+        print(f"   = {k}")
+
+    print("")
+    print(f"ENTRARAM, serão indexados ({len(diff.entered)}):")
+    for k in diff.entered:
+        print(f"   + {k}")
+    if not diff.entered:
+        print("   (nenhum)")
+
+    print("")
+    print(f"SAÍRAM, conteúdo a remover ({len(diff.left)}):")
+    total = 0
+    for k in diff.left:
+        n = len(store.list_doc_ids(source=SOURCE_CONFLUENCE, space_key=k))
+        total += n
+        print(f"   - {k}  ({n} documentos)")
+    if not diff.left:
+        print("   (nenhum)")
+
+    print("")
+    if aplicar and diff.left:
+        resultado = purge_spaces(store, diff.left)
+        print(f"removidos {resultado['documentos']} documentos de "
+              f"{resultado['espacos']} espaços do store.")
+        print("rode `index` para tirá-los do Qdrant também.")
+    elif diff.left:
+        print(f"{total} documentos seriam removidos. Rode com --apply.")
+    else:
+        print("nada a remover.")
 
 
 def _run_search(cfg: Config, args: argparse.Namespace) -> None:
@@ -766,6 +915,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         if source == SOURCE_CONFLUENCE
                         else reconcile_jira(cfg, store)
                     )
+            elif args.command == "scope":
+                _run_scope(cfg, store, args.apply)
+                return 0
             elif args.command == "search":
                 _run_search(cfg, args)
                 return 0

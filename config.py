@@ -204,7 +204,18 @@ class ConfluenceConfig:
     url: str
     user: str
     password: str
+    # Espaços fixos, quando CONFLUENCE_SPACES lista chaves. Vazio quando o
+    # escopo é descoberto (discover=True).
     spaces: tuple[str, ...]
+    # CONFLUENCE_SPACES=auto: o escopo passa a ser "tudo que o usuário de
+    # serviço enxerga", que é o que getSpaces() devolve. Quem controla o que
+    # entra passa a ser a administração de GRUPOS do Confluence, não este
+    # arquivo — que é onde essa informação deve morar. Medido nesta instância:
+    # o usuário timedesenv enxerga 716 espaços e o wmw-rag enxerga 30.
+    discover: bool = False
+    # Espaços que nunca entram, mesmo visíveis. Escapatória para excluir um
+    # espaço sem mexer nos grupos do Confluence.
+    exclude_spaces: tuple[str, ...] = ()
     verify_ssl: bool = True
     # Alto de propósito: getPages num espaço grande é UMA chamada que devolve
     # milhares de resumos. Medido em produção: 181 s para 6.129 páginas.
@@ -490,7 +501,9 @@ def load_config(*, dotenv: bool = True) -> Config:
     if conf_url:
         user = _env("CONFLUENCE_USER")
         password = _env("CONFLUENCE_PASSWORD")
-        spaces = _env_list("CONFLUENCE_SPACES")
+        raw_spaces = _env_list("CONFLUENCE_SPACES")
+        descobrir = len(raw_spaces) == 1 and raw_spaces[0].lower() == "auto"
+        spaces = () if descobrir else raw_spaces
         strategy = (_env("CONFLUENCE_INCREMENTAL_STRATEGY") or "full_scan").lower()
         if not user or not password:
             # O Confluence 4.x não suporta Personal Access Token; é usuário e senha ou nada.
@@ -498,12 +511,14 @@ def load_config(*, dotenv: bool = True) -> Config:
                 "CONFLUENCE_URL definido mas CONFLUENCE_USER/CONFLUENCE_PASSWORD "
                 "vazios (esta versão não suporta PAT)."
             )
-        elif not spaces:
+        elif not spaces and not descobrir:
             errors.append(
                 "CONFLUENCE_SPACES está vazio. Isso indexaria TODOS os espaços "
                 "visíveis ao usuário de serviço, incluindo RH, jurídico e "
                 "financeiro, e tornaria esse conteúdo pesquisável por qualquer "
-                "pessoa. Liste os espaços explicitamente."
+                "pessoa. Liste os espaços explicitamente, ou use "
+                "CONFLUENCE_SPACES=auto para adotar de propósito o que o "
+                "usuário de serviço enxerga."
             )
         elif strategy not in CONFLUENCE_STRATEGIES:
             errors.append(
@@ -517,6 +532,8 @@ def load_config(*, dotenv: bool = True) -> Config:
                 user=user,
                 password=password,
                 spaces=spaces,
+                discover=descobrir,
+                exclude_spaces=_env_list("CONFLUENCE_EXCLUDE_SPACES"),
                 verify_ssl=verify_ssl,
                 strategy=strategy,
             )

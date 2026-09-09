@@ -352,6 +352,21 @@ class DocumentStore:
         """Força reembedar tudo a partir do store, sem tocar no Atlassian."""
         self._conn.execute("UPDATE documents SET embedded_hash = NULL")
 
+    def confluence_space_keys(self) -> set[str]:
+        """Espaços que hoje TÊM conteúdo no store.
+
+        É o outro lado do diff de escopo: comparado com o que o Confluence
+        devolve agora, diz o que entrou e o que saiu.
+        """
+        return {
+            row["space_key"]
+            for row in self._conn.execute(
+                "SELECT DISTINCT space_key FROM documents "
+                "WHERE source = ? AND space_key IS NOT NULL",
+                (SOURCE_CONFLUENCE,),
+            )
+        }
+
     def iter_all(self) -> Iterator[Document]:
         for row in self._conn.execute("SELECT * FROM documents ORDER BY doc_id"):
             yield _row_to_document(row)
