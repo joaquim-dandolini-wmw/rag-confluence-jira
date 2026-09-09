@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import os
 import sys
 from dataclasses import dataclass, field
@@ -26,8 +27,30 @@ CONFLUENCE_STRATEGIES: Final[tuple[str, ...]] = ("full_scan",)
 DEFAULT_COLLECTION: Final[str] = "atlassian_kb"
 DENSE_VECTOR_NAME: Final[str] = "dense"
 SPARSE_VECTOR_NAME: Final[str] = "bm25"
-# Declarado no schema desde já para não exigir migração na Fase 2.
+# Declarado no schema desde a Fase 1 para não exigir migração na Fase 2.
 DENSE_VECTOR_SIZE: Final[int] = 1024
+
+# O e5-large produz 1024 dimensões, que é o que a coleção já declara. Trocar
+# de modelo exige um de mesma dimensão ou recriar a coleção.
+DEFAULT_EMBED_MODEL: Final[str] = "intfloat/multilingual-e5-large"
+# "cuda" deixa o código escolher a GPU discreta pelo número de compute units;
+# "cuda:N" fixa um índice. Ver indexer/embeddings.py:_resolve_device.
+EMBED_DEVICES: Final[tuple[str, ...]] = ("cpu", "cuda")
+_EMBED_DEVICE_RE = re.compile(r"^(cpu|cuda(:\d+)?)$")
+# Medido na RX 6900 XT (gfx1030): a vazão satura em batch 8 e piora acima de 32,
+# porque o padding até o maior item do lote passa a desperdiçar cálculo. 16 dá a
+# vazão máxima (89 fatias/s) com 1,87 GiB de pico em vez dos 13,77 GiB do 256.
+DEFAULT_EMBED_BATCH_SIZE: Final[int] = 16
+
+SEARCH_MODES: Final[tuple[str, ...]] = ("bm25", "dense", "hybrid", "auto")
+
+# Pesos da fusão RRF, na ordem (bm25, denso). NÃO são iguais de propósito: com
+# peso igual o denso derruba o acerto exato do BM25 em identificador, que é
+# justamente onde o denso não tem o que oferecer. Valores medidos - ver
+# SETUP.md. k é o denominador do RRF: 1/(k + rank).
+DEFAULT_RRF_WEIGHT_BM25: Final[float] = 2.0
+DEFAULT_RRF_WEIGHT_DENSE: Final[float] = 1.0
+DEFAULT_RRF_K: Final[int] = 60
 
 
 class ConfigError(RuntimeError):
@@ -169,12 +192,31 @@ class ConfluenceConfig:
 
 
 @dataclass(frozen=True)
+class EmbeddingConfig:
+    """Vetor denso da Fase 2.
+
+    O device sai do ambiente e não do código porque a mesma instalação roda a
+    carga inicial na GPU (~28 min) e o incremental de cron onde der. O PyTorch
+    com build ROCm expõe a GPU da AMD pela MESMA API "cuda" — não existe device
+    "rocm" nem "hip".
+    """
+
+    model_name: str
+    cache_dir: Path
+    # "cpu", "cuda" (escolhe a GPU discreta sozinho) ou "cuda:N" para fixar.
+    device: str
+    batch_size: int
+    allow_download: bool
+
+
+@dataclass(frozen=True)
 class Config:
     store_path: Path
     qdrant_url: str
     collection: str
     fastembed_cache_dir: Path
     allow_model_download: bool
+    embedding: EmbeddingConfig
     jira: JiraConfig | None = None
     confluence: ConfluenceConfig | None = None
     _errors: tuple[str, ...] = field(default=(), repr=False)
@@ -220,6 +262,30 @@ def load_config(*, dotenv: bool = True) -> Config:
     cache_dir = Path(_env("FASTEMBED_CACHE_DIR") or REPO_ROOT / "models" / "fastembed")
     allow_download = _env_bool("ALLOW_MODEL_DOWNLOAD", False)
     verify_ssl = _env_bool("VERIFY_SSL", True)
+
+    embed_device = (_env("EMBED_DEVICE") or "cuda").lower()
+    if not _EMBED_DEVICE_RE.match(embed_device):
+        errors.append(
+            f"EMBED_DEVICE={embed_device!r} desconhecido. Aceitos: "
+            f"{', '.join(EMBED_DEVICES)} ou \"cuda:N\". O PyTorch com build "
+            "ROCm usa \"cuda\" para a GPU da AMD; não existe device \"rocm\" "
+            "nem \"hip\"."
+        )
+    raw_batch = _env("EMBED_BATCH_SIZE")
+    try:
+        embed_batch = int(raw_batch) if raw_batch else DEFAULT_EMBED_BATCH_SIZE
+    except ValueError:
+        embed_batch = DEFAULT_EMBED_BATCH_SIZE
+        errors.append(f"EMBED_BATCH_SIZE={raw_batch!r} não é um inteiro.")
+    if embed_batch < 1:
+        errors.append(f"EMBED_BATCH_SIZE={embed_batch} precisa ser >= 1.")
+    embedding = EmbeddingConfig(
+        model_name=_env("EMBED_MODEL") or DEFAULT_EMBED_MODEL,
+        cache_dir=Path(_env("EMBED_CACHE_DIR") or REPO_ROOT / "models" / "e5"),
+        device=embed_device,
+        batch_size=embed_batch,
+        allow_download=allow_download,
+    )
 
     jira: JiraConfig | None = None
     jira_url = _env("JIRA_URL")
@@ -289,6 +355,7 @@ def load_config(*, dotenv: bool = True) -> Config:
         collection=collection,
         fastembed_cache_dir=cache_dir,
         allow_model_download=allow_download,
+        embedding=embedding,
         jira=jira,
         confluence=confluence,
         _errors=tuple(errors),

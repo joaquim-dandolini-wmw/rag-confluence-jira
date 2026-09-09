@@ -1,15 +1,23 @@
-"""Índice no Qdrant. Fase 1: apenas BM25 sparse.
+"""Índice no Qdrant: BM25 sparse (Fase 1) + vetor denso e fusão RRF (Fase 2).
 
-O schema já declara os dois tipos de vetor. O denso fica declarado e vazio de
-propósito: criar a coleção agora com a dimensão certa evita migração quando a
-camada de embeddings entrar, e uma coleção do Qdrant não pode ganhar um novo
-tipo de vetor depois de criada.
+O schema declarou os dois tipos de vetor desde a Fase 1, com o denso vazio, de
+propósito: uma coleção do Qdrant não pode ganhar um novo tipo de vetor depois de
+criada, então a Fase 2 popula o que já existe em vez de migrar.
+
+Por que HÍBRIDO e não substituição: o BM25 é quem acerta identificador exato -
+VENDAS-14993, PRUPSYNCPRODUTOS, ERR-4012 - e é exatamente onde o denso é ruim,
+porque uma chave de projeto não tem vizinhança semântica. O denso resolve
+sinônimo, onde o BM25 é ruim, porque "boleto" e "cobrança bancária" não
+compartilham token. Os dois rankings são fundidos por RRF no SERVIDOR, via
+prefetch + FusionQuery, e não no cliente: fundir aqui exigiria duas viagens e
+reimplementar o que o Qdrant já faz.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 import unicodedata
 from dataclasses import dataclass
@@ -19,8 +27,18 @@ from typing import Any, Iterable, Sequence
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException
 
-from config import DENSE_VECTOR_NAME, DENSE_VECTOR_SIZE, SPARSE_VECTOR_NAME
+from config import (
+    DEFAULT_RRF_K,
+    DEFAULT_RRF_WEIGHT_BM25,
+    DEFAULT_RRF_WEIGHT_DENSE,
+    DENSE_VECTOR_NAME,
+    DENSE_VECTOR_SIZE,
+    SEARCH_MODES,
+    SPARSE_VECTOR_NAME,
+    EmbeddingConfig,
+)
 from indexer.chunking import Chunk
+from indexer.embeddings import DenseEmbedder
 from store.documents import Document
 
 LOG = logging.getLogger("indexer.index")
@@ -39,6 +57,42 @@ _PAYLOAD_KEYWORD_INDEXES = ("source", "project", "space_key", "status", "doc_id"
 # é falha do Qdrant e não deve custar o documento.
 _TRANSIENT_QDRANT = (ResponseHandlingException, ConnectionError, OSError)
 _UPSERT_RETRIES = 3
+
+# Quantas fatias buscar por vaga de resultado quando se deduplica por
+# documento. 3 é suficiente: medido nesta coleção, leva os 3 de 5 documentos
+# distintos do pior caso para 5 de 5.
+_DEDUPE_OVERFETCH = 3
+
+# Identificador desta base: chave de projeto (VENDAS-14993, ERR-4012) ou nome
+# de objeto de banco/procedure em caixa alta (PRUPSYNCPRODUTOS, VLCHAVE).
+_IDENT_RE = re.compile(r"[A-Z][A-Z0-9_]*-\d+|\b[A-Z][A-Z0-9_]{5,}\b")
+
+
+def classify_query(query: str) -> str:
+    """Decide o modo do "auto": lexical, misto ou prosa.
+
+    Existe porque a fusão RRF, medida nesta coleção, NÃO atende os dois
+    critérios ao mesmo tempo - e nenhum peso, profundidade ou deduplicação
+    resolve:
+
+      identificador exato   BM25 acerta em 1º; o híbrido joga
+                            PRUPSYNCPRODUTOS para fora do top-5
+      sinônimo puro         o denso acha os 3 alvos (8/13/28); o BM25 não
+                            acha nenhum; o híbrido acha 2 em 55/64
+
+    Então em vez de um compromisso que perde nos dois, a consulta escolhe o
+    instrumento. O BM25 é preciso e o denso é abrangente; a pergunta diz de
+    qual dos dois ela precisa.
+    """
+    identificadores = _IDENT_RE.findall(query)
+    if not identificadores:
+        return "dense"
+    # Só o identificador, ou quase: é busca lexical: "VENDAS-14993".
+    resto = _IDENT_RE.sub(" ", query).split()
+    if len(resto) <= 1:
+        return "bm25"
+    # Identificador no meio de uma frase: os dois contribuem.
+    return "hybrid"
 
 
 class IndexError_(RuntimeError):
@@ -134,12 +188,16 @@ class KnowledgeIndex:
         *,
         allow_download: bool = False,
         timeout: int = 60,
+        embedding: EmbeddingConfig | None = None,
+        embedder: DenseEmbedder | None = None,
     ) -> None:
         self.collection = collection
         self._client = QdrantClient(url=qdrant_url, timeout=timeout)
         self._cache_dir = cache_dir
         self._allow_download = allow_download
         self._model: Any | None = None
+        self._embedding_cfg = embedding
+        self._embedder = embedder
 
     def close(self) -> None:
         self._client.close()
@@ -155,6 +213,23 @@ class KnowledgeIndex:
         if self._model is None:
             self._model = _load_sparse_model(self._cache_dir, self._allow_download)
         return self._model
+
+    @property
+    def embedder(self) -> DenseEmbedder:
+        """Carregado só quando alguém realmente pede o denso.
+
+        Uma busca em modo bm25 não deve pagar 1,4 s de carga do e5 nem exigir
+        GPU, e o `index` da Fase 1 continua funcionando sem torch instalado.
+        """
+        if self._embedder is None:
+            if self._embedding_cfg is None:
+                raise IndexError_(
+                    "o vetor denso foi pedido mas nenhuma configuração de "
+                    "embedding foi passada ao KnowledgeIndex. Use "
+                    "load_config().embedding."
+                )
+            self._embedder = DenseEmbedder(self._embedding_cfg)
+        return self._embedder
 
     # -- schema ------------------------------------------------------------
 
@@ -174,6 +249,9 @@ class KnowledgeIndex:
                 "Atualize a tag da imagem no docker-compose.yml."
             )
         return version
+
+    def collection_exists(self) -> bool:
+        return bool(self._client.collection_exists(self.collection))
 
     def ensure_collection(self, *, recreate: bool = False) -> bool:
         version = self.check_server()
@@ -300,7 +378,63 @@ class KnowledgeIndex:
         )
         return len(points)
 
+    def update_dense(
+        self, vectors: Sequence[tuple[str, Sequence[float]]], doc_id: str
+    ) -> int:
+        """Escreve o vetor denso em pontos que JÁ EXISTEM.
+
+        É update, não upsert: os chunk_id são uuid5 determinísticos, então
+        casam com os pontos criados pelo `index`. Se o ponto não existir, o
+        Qdrant não tem o que atualizar e o vetor se perde - por isso o
+        `iter_pending_embed` só entrega documento já indexado.
+        """
+        if not vectors:
+            return 0
+        points = [
+            models.PointVectors(id=chunk_id, vector={DENSE_VECTOR_NAME: list(vector)})
+            for chunk_id, vector in vectors
+        ]
+        self._retry(
+            "update_vectors",
+            lambda: self._client.update_vectors(
+                collection_name=self.collection, points=points, wait=False
+            ),
+            doc_id,
+        )
+        return len(points)
+
+    def count_dense(self) -> int:
+        """Pontos que já têm o vetor denso preenchido.
+
+        Serve para detectar estado obsoleto: o embedded_hash mora no document
+        store mas descreve o estado do QDRANT. Store e coleção podem divergir
+        (store trazido de outra máquina, coleção recriada), e sem esta contagem
+        o `embed` acreditaria que não há nada a fazer com o denso vazio.
+        """
+        return int(
+            self._client.count(
+                self.collection,
+                count_filter=models.Filter(
+                    must=[models.HasVectorCondition(has_vector=DENSE_VECTOR_NAME)]
+                ),
+                exact=True,
+            ).count
+        )
+
     # -- leitura -----------------------------------------------------------
+
+    def _sparse_query(self, query: str) -> models.SparseVector | None:
+        """Vetor sparse da consulta.
+
+        fold_accents() aqui é obrigatório e simétrico com a indexação: o
+        tokenizer do BM25 não normaliza diacrítico. NÃO se aplica ao denso.
+        """
+        embedded = list(self.model.query_embed(fold_accents(query)))
+        if not embedded:
+            return None
+        return models.SparseVector(
+            indices=embedded[0].indices.tolist(), values=embedded[0].values.tolist()
+        )
 
     def search(
         self,
@@ -311,15 +445,29 @@ class KnowledgeIndex:
         project: str | None = None,
         space_key: str | None = None,
         status: str | None = None,
+        mode: str = "hybrid",
+        prefetch_limit: int | None = None,
+        dedupe_by_document: bool = True,
+        bm25_weight: float = DEFAULT_RRF_WEIGHT_BM25,
+        dense_weight: float = DEFAULT_RRF_WEIGHT_DENSE,
+        rrf_k: int = DEFAULT_RRF_K,
     ) -> list[SearchHit]:
+        if mode not in SEARCH_MODES:
+            raise IndexError_(
+                f"modo de busca {mode!r} desconhecido. Aceitos: "
+                f"{', '.join(SEARCH_MODES)}."
+            )
         if not query.strip():
             return []
-        embedded = list(self.model.query_embed(fold_accents(query)))
-        if not embedded:
-            return []
-        sparse = models.SparseVector(
-            indices=embedded[0].indices.tolist(), values=embedded[0].values.tolist()
-        )
+        if mode == "auto":
+            mode = classify_query(query)
+            LOG.debug("modo escolhido pelo auto", extra={"modo": mode})
+
+        # Sem deduplicar, um documento longo ocupa várias vagas com fatias
+        # vizinhas: medido, 3 de 5 resultados vinham de 3 documentos só. Para
+        # quem consome (o modelo, via MCP) isso é contexto desperdiçado. Busca-se
+        # mais fundo e devolve-se a MELHOR fatia de cada documento.
+        fetch = limit * _DEDUPE_OVERFETCH if dedupe_by_document else limit
 
         conditions = [
             models.FieldCondition(key=key, match=models.MatchValue(value=value))
@@ -333,17 +481,96 @@ class KnowledgeIndex:
         ]
         query_filter = models.Filter(must=conditions) if conditions else None
 
-        response = self._client.query_points(
-            collection_name=self.collection,
-            query=sparse,
-            using=SPARSE_VECTOR_NAME,
-            limit=limit,
-            query_filter=query_filter,
-            with_payload=True,
-        )
+        # As duas pernas NÃO buscam na mesma profundidade, e isso é o ajuste que
+        # mais importa na fusão. Medido nesta coleção, com o documento-alvo de
+        # uma consulta em sinônimo puro:
+        #
+        #   bm25=50 denso=50   -> alvo em 46/54/não-achou
+        #   bm25= 5 denso=100  -> alvo em 17/20/36, identificador exato intacto
+        #
+        # O motivo é o mecanismo do RRF: ele soma 1/(k+rank), então cada
+        # candidato que o BM25 traz ocupa uma posição boa mesmo sendo
+        # irrelevante para uma consulta em prosa, e dilui o acerto do denso. O
+        # BM25 é instrumento de PRECISÃO - só as primeiras posições dele valem;
+        # o denso é instrumento de RECALL - precisa de profundidade.
+        dense_deep = prefetch_limit or max(fetch * 10, 100)
+        bm25_deep = prefetch_limit or max(fetch, 5)
+
+        if mode == "bm25":
+            sparse = self._sparse_query(query)
+            if sparse is None:
+                return []
+            response = self._client.query_points(
+                collection_name=self.collection,
+                query=sparse,
+                using=SPARSE_VECTOR_NAME,
+                limit=fetch,
+                query_filter=query_filter,
+                with_payload=True,
+            )
+        elif mode == "dense":
+            response = self._client.query_points(
+                collection_name=self.collection,
+                query=self.embedder.embed_query(query),
+                using=DENSE_VECTOR_NAME,
+                limit=fetch,
+                query_filter=query_filter,
+                with_payload=True,
+            )
+        else:
+            sparse = self._sparse_query(query)
+            # O filtro vai DENTRO de cada prefetch: a fusão só reordena ids já
+            # trazidos, então filtrar apenas no topo deixaria cada perna gastar
+            # suas vagas com pontos fora do escopo.
+            dense_leg = models.Prefetch(
+                query=self.embedder.embed_query(query),
+                using=DENSE_VECTOR_NAME,
+                filter=query_filter,
+                limit=dense_deep,
+                # hnsw_ef alto de propósito: com o padrão, duas execuções da
+                # MESMA consulta devolviam ordens diferentes, porque a busca
+                # aproximada trocava o conjunto trazido e a fusão desempatava
+                # ao acaso. Medido nesta coleção de 148 mil pontos.
+                params=models.SearchParams(hnsw_ef=max(dense_deep * 2, 256)),
+            )
+            prefetch = [dense_leg]
+            pesos = [dense_weight]
+            if sparse is not None:
+                prefetch.insert(
+                    0,
+                    models.Prefetch(
+                        query=sparse,
+                        using=SPARSE_VECTOR_NAME,
+                        filter=query_filter,
+                        limit=bm25_deep,
+                    ),
+                )
+                pesos.insert(0, bm25_weight)
+            response = self._client.query_points(
+                collection_name=self.collection,
+                prefetch=prefetch,
+                # RRF PONDERADO, não o RRF simples. Com peso igual o denso
+                # derruba o acerto exato do BM25: para "VENDAS-14993" o denso
+                # traz VENDAS-12493 e VENDAS-15493 (tokens numericamente
+                # parecidos, sem vizinhança semântica real) e a fusão promove
+                # um deles. O peso maior no BM25 preserva o identificador sem
+                # abrir mão do sinônimo, que é o que o denso acrescenta.
+                query=models.RrfQuery(
+                    rrf=models.Rrf(k=rrf_k, weights=pesos)
+                ),
+                limit=fetch,
+                with_payload=True,
+            )
+
         hits: list[SearchHit] = []
+        vistos: set[str] = set()
         for point in response.points:
             payload = point.payload or {}
+            doc_id = str(payload.get("doc_id", ""))
+            if dedupe_by_document:
+                if doc_id in vistos:
+                    continue
+                vistos.add(doc_id)
             hits.append(
                 SearchHit(
                     score=float(point.score),
@@ -363,6 +590,8 @@ class KnowledgeIndex:
                     labels=tuple(payload.get("labels") or ()),
                 )
             )
+            if len(hits) == limit:
+                break
         return hits
 
     def count(self) -> int:

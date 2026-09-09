@@ -39,12 +39,16 @@ CREATE TABLE IF NOT EXISTS documents (
     labels_json   TEXT NOT NULL DEFAULT '[]',
     content_hash  TEXT NOT NULL,
     extracted_at  TEXT NOT NULL,
-    indexed_hash  TEXT
+    indexed_hash  TEXT,
+    embedded_hash TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_documents_source     ON documents(source);
 CREATE INDEX IF NOT EXISTS idx_documents_space      ON documents(space_key);
 CREATE INDEX IF NOT EXISTS idx_documents_project    ON documents(project);
 CREATE INDEX IF NOT EXISTS idx_documents_pending    ON documents(indexed_hash);
+-- O índice de embedded_hash NÃO fica aqui: este script roda antes de _migrate,
+-- e num store que ainda não tem a coluna ele falharia com "no such column".
+-- Quem o cria é _migrate, depois de garantir a coluna.
 
 -- Tabela própria, e não um blob JSON único, para que o estado possa ser
 -- gravado de forma incremental: uma queda no meio da rodada não pode fazer a
@@ -108,6 +112,7 @@ class StoreStats:
     documents: int = 0
     by_source: dict[str, int] = field(default_factory=dict)
     pending_index: int = 0
+    pending_embed: int = 0
 
 
 class DocumentStore:
@@ -125,7 +130,26 @@ class DocumentStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Colunas acrescentadas depois que já existiam stores em produção.
+
+        O CREATE TABLE IF NOT EXISTS do _SCHEMA não altera tabela existente, e
+        este store tem 33 mil documentos que custaram 1h19min de extração
+        contra as instâncias reais: recriar não é opção.
+        """
+        existing = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(documents)")
+        }
+        if "embedded_hash" not in existing:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN embedded_hash TEXT")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_documents_pending_emb "
+            "ON documents(embedded_hash)"
+        )
 
     # -- ciclo de vida -----------------------------------------------------
 
@@ -266,6 +290,68 @@ class DocumentStore:
         """Força reindexação completa a partir do store, sem tocar no Atlassian."""
         self._conn.execute("UPDATE documents SET indexed_hash = NULL")
 
+    # -- vetor denso (Fase 2) ----------------------------------------------
+    #
+    # Coluna separada de indexed_hash de propósito: o BM25 é calculado no
+    # cliente em microssegundos, o denso custa GPU. Reindexar o sparse não pode
+    # obrigar a reembedar, e vice-versa.
+
+    def iter_pending_embed(self, batch_size: int = 200) -> Iterator[Document]:
+        """Documentos sem vetor denso atualizado.
+
+        Só devolve documento JÁ INDEXADO (indexed_hash = content_hash). O
+        `embed` faz UPDATE do vetor denso em ponto existente; se o ponto ainda
+        não foi criado pelo `index`, o update do Qdrant não tem o que atualizar
+        e o vetor se perderia em silêncio, com o documento marcado como
+        embedado. Por isso a ordem é sempre index -> embed.
+
+        Pagina por doc_id crescente pelo mesmo motivo do iter_pending_index:
+        o cursor avança mesmo quando o consumidor falha num documento, então
+        uma falha transitória não represa a fila nem aborta a rodada.
+        """
+        cursor = ""
+        while True:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM documents
+                WHERE (embedded_hash IS NULL OR embedded_hash <> content_hash)
+                  AND indexed_hash = content_hash
+                  AND doc_id > ?
+                ORDER BY doc_id
+                LIMIT ?
+                """,
+                (cursor, batch_size),
+            ).fetchall()
+            if not rows:
+                return
+            for row in rows:
+                yield _row_to_document(row)
+            cursor = rows[-1]["doc_id"]
+
+    def count_pending_embed(self) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM documents "
+            "WHERE (embedded_hash IS NULL OR embedded_hash <> content_hash) "
+            "AND indexed_hash = content_hash"
+        ).fetchone()
+        return int(row["n"])
+
+    def mark_embedded(self, doc_id: str, content_hash: str) -> None:
+        self._conn.execute(
+            "UPDATE documents SET embedded_hash = ? WHERE doc_id = ?",
+            (content_hash, doc_id),
+        )
+
+    def count_embedded(self) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM documents WHERE embedded_hash IS NOT NULL"
+        ).fetchone()
+        return int(row["n"])
+
+    def mark_all_unembedded(self) -> None:
+        """Força reembedar tudo a partir do store, sem tocar no Atlassian."""
+        self._conn.execute("UPDATE documents SET embedded_hash = NULL")
+
     def iter_all(self) -> Iterator[Document]:
         for row in self._conn.execute("SELECT * FROM documents ORDER BY doc_id"):
             yield _row_to_document(row)
@@ -282,6 +368,7 @@ class DocumentStore:
             documents=int(total),
             by_source=by_source,
             pending_index=self.count_pending_index(),
+            pending_embed=self.count_pending_embed(),
         )
 
     # -- estado do sync ----------------------------------------------------
