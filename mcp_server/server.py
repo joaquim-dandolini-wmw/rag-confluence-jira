@@ -16,7 +16,7 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
-from config import ConfigError, load_config, setup_logging
+from config import SEARCH_MODES, ConfigError, load_config, setup_logging
 from connectors.confluence_legacy import (
     ConfluenceAuthError,
     ConfluenceClient,
@@ -35,7 +35,8 @@ server = MCPServer(
     name="atlassian-kb",
     instructions=(
         "Busca sobre um Jira 8.14 e um Confluence 4.2.4 internos. "
-        "Use search_knowledge_base para encontrar conteúdo por assunto; use as "
+        "Use search_knowledge_base para encontrar conteúdo por assunto ou por "
+        "significado; use as "
         "ferramentas ao vivo (search_jira_jql, get_jira_issue, "
         "get_confluence_page) sempre que a resposta precisar estar correta "
         "agora, e não apenas aproximada. Todo resultado traz a URL de origem: "
@@ -64,6 +65,7 @@ def _knowledge_index() -> KnowledgeIndex:
             cfg.collection,
             cfg.fastembed_cache_dir,
             allow_download=cfg.allow_model_download,
+            embedding=cfg.embedding,
         )
     return _index
 
@@ -98,13 +100,25 @@ def search_knowledge_base(
     source: str | None = None,
     project: str | None = None,
     space_key: str | None = None,
+    mode: str = "auto",
 ) -> dict[str, Any]:
-    """Busca textual no índice unificado de Jira e Confluence.
+    """Busca híbrida no índice unificado de Jira e Confluence.
 
     Esta é a ferramenta padrão para encontrar conhecimento: procedimentos,
     runbooks, post-mortems, decisões, discussões de chamados. Ela pesquisa o
     texto das páginas e das issues ao mesmo tempo e devolve os trechos
     relevantes com a URL de origem.
+
+    Encontra por PALAVRA e por SIGNIFICADO, e escolhe sozinha qual dos dois usar
+    conforme o formato da pergunta. Um identificador (VENDAS-14993,
+    PRUPSYNCPRODUTOS) vai pelo índice lexical, que acerta o exato; uma pergunta
+    em prosa vai pelo índice semântico, que acha o documento mesmo quando o
+    texto usa outra palavra para a mesma coisa - "dados da fatura para pagamento
+    em banco" encontra a página que fala em "boleto bancário". Não é preciso
+    adivinhar o vocabulário de quem escreveu.
+
+    Cada resultado traz a URL de origem: a página do Confluence ou a issue do
+    Jira em /browse/. Cite-a.
 
     USE QUANDO:
       - a pergunta for sobre um assunto, um erro, um procedimento ou um
@@ -113,7 +127,9 @@ def search_knowledge_base(
       - você não souber em qual das duas fontes está a resposta;
       - você precisar de trechos de texto para fundamentar uma explicação;
       - você tiver um identificador solto no meio de um texto (ERR-4012) e
-        quiser saber onde ele é mencionado.
+        quiser saber onde ele é mencionado;
+      - você suspeitar que o documento existe mas não souber com que palavras
+        ele foi escrito: descreva o problema com as suas.
 
     NÃO USE QUANDO:
       - a pergunta pedir CONTAGEM, LISTAGEM COMPLETA, FILTRO POR STATUS ou
@@ -128,24 +144,34 @@ def search_knowledge_base(
 
     Args:
         query: texto livre em português ou inglês. Acentuação é indiferente.
+            Descreva o assunto; não é necessário acertar o termo do documento.
         limit: número de trechos a devolver (1 a 25).
         source: restringe a "jira" ou "confluence". Deixe vazio para as duas.
         project: chave do projeto Jira, ex. "OPS". Só afeta resultados do Jira.
         space_key: chave do espaço Confluence, ex. "INFRA". Só afeta o Confluence.
+        mode: deixe o padrão "auto", que escolhe sozinho pelo formato da
+            pergunta. Os outros existem para comparação A/B: "bm25" só lexical,
+            "dense" só semântico, "hybrid" funde os dois por RRF.
 
     Returns:
         results: lista de trechos, cada um com title, url, source, text e score.
     """
     limit = max(1, min(int(limit), MAX_SEARCH_LIMIT))
+    if mode not in SEARCH_MODES:
+        return _error(
+            f"modo {mode!r} desconhecido; aceitos: {', '.join(SEARCH_MODES)}"
+        )
     try:
         hits = _knowledge_index().search(
-            query, limit=limit, source=source, project=project, space_key=space_key
+            query, limit=limit, source=source, project=project,
+            space_key=space_key, mode=mode,
         )
     except Exception as exc:  # noqa: BLE001 - a ferramenta devolve o erro, não derruba o servidor
         return _error(f"busca no índice falhou: {exc}")
 
     return {
         "query": query,
+        "mode": mode,
         "count": len(hits),
         "filters": {"source": source, "project": project, "space_key": space_key},
         "results": [hit.as_dict() for hit in hits],
