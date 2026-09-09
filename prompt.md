@@ -49,15 +49,18 @@ GPU AMD Radeon RX 6900 XT, 16 GB VRAM, RDNA2 (gfx1030).
 
   distro     CachyOS (base Arch), kernel 7.2.3-1-cachyos
   usuário    joaquimdp (uid 1000), home /home/joaquimdp, shell FISH
-  grupos     wheel, video, docker, storage, audio — NÃO está em 'render'
+  CPU        AMD Ryzen 5 7600, 12 threads
   RAM        30 GB
-  disco      /home com 380 GB livres
-  GPU        03:00.0 Navi 21 [RX 6800/6800 XT/6900 XT]  <- a discreta
-             12:00.0 Raphael  <- iGPU do Ryzen, integrada
-  ROCm       AUSENTE
+  disco      /home com 379 GB livres
+  GPU 0      gfx1030  AMD Radeon RX 6900 XT   <- a discreta, a que interessa
+  GPU 1      gfx1036  iGPU do Ryzen 7600      <- integrada
+  ROCm       7.2.4 JÁ INSTALADO em /opt/rocm (pacotes rocm-hip-sdk 7.2.4-1 e
+             rocminfo 7.2.4-1.1 do repo extra). NÃO está no PATH padrão:
+             use export PATH=/opt/rocm/bin:$PATH
   Docker     29.7.2, joaquimdp já no grupo docker, funciona sem sudo
   Python     3.14.7 no sistema; 3.12.14 já instalado via uv
   uv         0.12.11 em ~/.local/bin
+  rede       pypi.org, huggingface.co e download.pytorch.org acessíveis
 
 RESTRIÇÕES:
 - Rede interna. Nenhum conteúdo sai da rede.
@@ -107,20 +110,42 @@ QUATRO ARMADILHAS DESTA MÁQUINA, JÁ MAPEADAS
   a) O PyTorch NÃO tem wheel para Python 3.14 em nenhuma variante. Por isso
      o venv já está em 3.12.14, instalado com `uv python install 3.12` sem
      tocar no Python do sistema. Use ESTE venv; não crie outro.
+     Wheels ROCm para cp312 EXISTEM e foram vistas do próprio host, ex.:
+       download.pytorch.org/whl/rocm6.3/  ->  torch-2.9.1+rocm6.3-cp312
+     Os índices rocm6.2, rocm6.3 e rocm6.4 respondem 200. O repo do Arch
+     também traz python-pytorch-rocm 2.13.0-6, mas ele é pacote de SISTEMA
+     e nós precisamos do torch DENTRO do venv — prefira a wheel.
 
-  b) joaquimdp precisa entrar no grupo 'render' para o ROCm acessar
-     /dev/kfd. Ele já está em 'video', que sozinho não basta. Isso exige
-     sudo e relogin para valer.
+     ATENÇÃO À COMBINAÇÃO: o ROCm do sistema é 7.2.4 e as wheels são
+     construídas para 6.3/6.4. As wheels trazem as bibliotecas ROCm
+     próprias, então normalmente funciona, mas é exatamente isso que você
+     precisa VERIFICAR antes de assumir. Comece pela wheel mais nova.
 
-  c) São DUAS GPUs. O ROCm vai enumerar as duas e o device 0 pode ser a
-     iGPU Raphael, não a Navi 21. Descubra o índice correto e fixe com
-     HIP_VISIBLE_DEVICES ou ROCR_VISIBLE_DEVICES. Não presuma device 0.
+  b) O grupo 'render' NÃO é necessário nesta máquina, ao contrário do que
+     costuma ser: /dev/kfd, /dev/dri/renderD128 e /dev/dri/renderD129 estão
+     com permissão 0666 e o joaquimdp já lê e escreve nos três. Confirmei.
+     Não perca tempo com usermod nem relogin.
 
-  d) O shell é fish: `export VAR=valor` não funciona. Variável persistente
-     é `set -Ux HSA_OVERRIDE_GFX_VERSION 10.3.0`. Para o usuário de serviço
-     e para o cron prefira um arquivo de ambiente lido explicitamente, que
-     não depende de shell interativo. Ao rodar scripts bash por SSH, use
-     `ssh host bash -s < script`, porque fish não entende sintaxe bash.
+  c) São DUAS GPUs e o rocminfo enumera as duas: gfx1030 (a RX 6900 XT) e
+     gfx1036 (a iGPU do Ryzen). O device 0 do PyTorch pode cair na iGPU.
+     Descubra o índice da gfx1030 e fixe com HIP_VISIBLE_DEVICES ou
+     ROCR_VISIBLE_DEVICES. Não presuma device 0.
+
+  d) HSA_OVERRIDE_GFX_VERSION provavelmente NÃO é necessário aqui: o
+     rocminfo 7.2.4 já reporta a placa como gfx1030 nativamente, inclusive
+     com alvo amdgcn-amd-amdhsa--gfx10-3-generic. Teste SEM o override
+     primeiro; só use 10.3.0 se o torch realmente não enxergar a GPU.
+
+  e) O shell é fish. Ao rodar scripts bash por SSH use
+     `ssh host bash -s < script`, porque fish não entende if/then/fi nem
+     `set -e`. Variável persistente em fish é `set -Ux NOME valor`. Para o
+     usuário de serviço e para o cron prefira um arquivo de ambiente lido
+     explicitamente, que não depende de shell interativo.
+
+  f) `rocm-smi` nesta máquina emite "WARNING: AMD GPU device(s) is/are in a
+     low-power state" e "Exception caught: map::at" com a GPU ociosa. Não
+     conclua daí que o ROCm está quebrado — valide com rocminfo e com um
+     tensor de verdade no torch.
 
 ───────────────────────────────────────────────────────────
 DOIS DEFEITOS JÁ CORRIGIDOS QUE EXPLICAM DECISÕES DO CÓDIGO
@@ -149,14 +174,12 @@ Ambos apareceram justamente nesta migração. Não os reintroduza.
 PARTE A — INFRAESTRUTURA
 ═══════════════════════════════════════════════════════════
 
-A.1 ROCm
-  - Pacotes necessários, grupos de usuário (render, video).
-  - gfx1030 está em zona cinzenta de suporte oficial: a AMD foca as RDNA3.
-    Costuma funcionar, mas frequentemente exige HSA_OVERRIDE_GFX_VERSION=10.3.0.
-    VERIFIQUE se é necessário aqui e, se for, deixe persistente para o usuário
-    de serviço.
-  - Meu conhecimento de versões do ecossistema ROCm pode estar desatualizado.
-    Verifique na máquina e nos repositórios oficiais; não confie em número fixo.
+A.1 ROCm — já instalado (7.2.4), então aqui é validação, não instalação.
+  - Confirme com PATH=/opt/rocm/bin:$PATH rocminfo que a gfx1030 aparece.
+  - Determine se HSA_OVERRIDE_GFX_VERSION é necessário. Tudo indica que NÃO
+    (ver armadilha "d"), mas confirme com o torch já instalado.
+  - Se algo faltar, os pacotes vêm do repo extra do Arch. Não confie em
+    número de versão de memória: verifique na máquina.
 
 A.2 Python 3.12 em venv isolado.
     O código-fonte é escrito para 3.12+ e não usa sintaxe exclusiva de 3.13.
