@@ -47,6 +47,36 @@ HARDWARE E RESTRIÇÕES DESTA MÁQUINA
 
 GPU AMD Radeon RX 6900 XT, 16 GB VRAM, RDNA2 (gfx1030). Linux.
 
+JÁ INSPECIONADO REMOTAMENTE — confirme, mas não redescubra do zero:
+
+  distro    CachyOS (base Arch), kernel 7.2.3-1-cachyos
+  usuário   joaquimdp (uid 1000), home /home/joaquimdp, shell FISH
+  grupos    wheel, video, docker, storage, audio — NÃO está em 'render'
+  GPU       03:00.0 Navi 21 [RX 6800/6800 XT/6900 XT]  (a discreta, a que interessa)
+            12:00.0 Raphael  (iGPU do Ryzen, integrada)
+  ROCm      AUSENTE (rocminfo e rocm-smi não existem)
+  Docker    29.7.2, já instalado, joaquimdp já está no grupo docker
+  Python    3.14.7 do sistema; NÃO existe 3.12
+
+QUATRO CONSEQUÊNCIAS DISSO, que você precisa tratar:
+
+  a) O PyTorch NÃO tem wheel para Python 3.14 em nenhuma variante (ROCm, CUDA
+     ou CPU). O 3.12 tem que ser providenciado. No Arch ele não está nos
+     repositórios oficiais; `uv python install 3.12` resolve sem tocar no
+     Python do sistema. Confirme antes de escolher o caminho.
+
+  b) joaquimdp precisa entrar no grupo 'render' para o ROCm acessar /dev/kfd.
+     Ele já está em 'video', que sozinho não basta.
+
+  c) São DUAS GPUs. O ROCm vai enumerar as duas e o dispositivo 0 pode cair na
+     iGPU Raphael. Descubra o índice da Navi 21 e fixe com HIP_VISIBLE_DEVICES
+     ou ROCR_VISIBLE_DEVICES. Não presuma que device 0 é a placa certa.
+
+  d) O shell é fish: `export VAR=valor` não funciona. Variável persistente é
+     `set -Ux HSA_OVERRIDE_GFX_VERSION 10.3.0`. Para o usuário de serviço e
+     para o cron, prefira um arquivo de ambiente lido explicitamente, que não
+     depende do shell interativo.
+
 - Rede interna. Nenhum conteúdo sai da rede.
 - Qdrant NUNCA exposto na rede: bind em 127.0.0.1 apenas.
 - Nada instalado no Python do sistema. Tudo em venv isolado.
