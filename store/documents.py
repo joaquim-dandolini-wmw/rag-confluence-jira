@@ -218,35 +218,31 @@ class DocumentStore:
         return {row["doc_id"] for row in rows}
 
     def iter_pending_index(self, batch_size: int = 200) -> Iterator[Document]:
-        """Documentos cujo conteúdo mudou desde a última indexação."""
+        """Documentos cujo conteúdo mudou desde a última indexação.
+
+        Pagina por doc_id crescente em vez de reconsultar sempre o mesmo topo
+        da fila. Assim o cursor avança independentemente de o consumidor ter
+        conseguido indexar o documento: uma falha transitória num documento
+        não represa a fila nem interrompe o restante da rodada. Quem falhou
+        continua pendente e entra na próxima execução.
+        """
+        cursor = ""
         while True:
             rows = self._conn.execute(
                 """
                 SELECT * FROM documents
-                WHERE indexed_hash IS NULL OR indexed_hash <> content_hash
+                WHERE (indexed_hash IS NULL OR indexed_hash <> content_hash)
+                  AND doc_id > ?
+                ORDER BY doc_id
                 LIMIT ?
                 """,
-                (batch_size,),
+                (cursor, batch_size),
             ).fetchall()
             if not rows:
                 return
             for row in rows:
                 yield _row_to_document(row)
-            # A saída depende de mark_indexed ter sido chamado pelo consumidor;
-            # sem isso a mesma página voltaria para sempre.
-            still_pending = self._conn.execute(
-                """
-                SELECT 1 FROM documents
-                WHERE doc_id = ? AND (indexed_hash IS NULL OR indexed_hash <> content_hash)
-                """,
-                (rows[-1]["doc_id"],),
-            ).fetchone()
-            if still_pending:
-                LOG.error(
-                    "documento continua pendente após o lote; interrompendo para não repetir",
-                    extra={"doc_id": rows[-1]["doc_id"]},
-                )
-                return
+            cursor = rows[-1]["doc_id"]
 
     def count_pending_index(self) -> int:
         row = self._conn.execute(

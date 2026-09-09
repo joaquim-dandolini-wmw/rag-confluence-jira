@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from qdrant_client import QdrantClient, models
+from qdrant_client.http.exceptions import ResponseHandlingException
 
 from config import DENSE_VECTOR_NAME, DENSE_VECTOR_SIZE, SPARSE_VECTOR_NAME
 from indexer.chunking import Chunk
@@ -30,6 +32,13 @@ BM25_LANGUAGE = "portuguese"
 MIN_QDRANT_VERSION = (1, 9)
 
 _PAYLOAD_KEYWORD_INDEXES = ("source", "project", "space_key", "status", "doc_id")
+
+# O cliente reaproveita conexões do pool e ocasionalmente pega uma que o
+# servidor já fechou por keep-alive, o que chega como "connection reset by
+# peer". Numa rodada de dezenas de milhares de documentos isso acontece; não
+# é falha do Qdrant e não deve custar o documento.
+_TRANSIENT_QDRANT = (ResponseHandlingException, ConnectionError, OSError)
+_UPSERT_RETRIES = 3
 
 
 class IndexError_(RuntimeError):
@@ -240,8 +249,22 @@ class KnowledgeIndex:
             removed += 1
         return removed
 
+    def _retry(self, what: str, action: Any, doc_id: str) -> Any:
+        for attempt in range(_UPSERT_RETRIES):
+            try:
+                return action()
+            except _TRANSIENT_QDRANT as exc:
+                if attempt == _UPSERT_RETRIES - 1:
+                    raise
+                LOG.warning(
+                    "falha transitória no Qdrant, tentando de novo",
+                    extra={"operacao": what, "doc_id": doc_id,
+                           "tentativa": attempt + 1, "erro": str(exc)},
+                )
+                time.sleep(0.5 * (attempt + 1))
+
     def index_document(self, document: Document, chunks: Sequence[Chunk]) -> int:
-        self.delete_document(document.doc_id)
+        self._retry("delete", lambda: self.delete_document(document.doc_id), document.doc_id)
         if not chunks:
             return 0
         vectors = self._embed([chunk.text for chunk in chunks])
@@ -268,7 +291,13 @@ class KnowledgeIndex:
             )
             for chunk, vector in zip(chunks, vectors)
         ]
-        self._client.upsert(collection_name=self.collection, points=points, wait=False)
+        self._retry(
+            "upsert",
+            lambda: self._client.upsert(
+                collection_name=self.collection, points=points, wait=False
+            ),
+            document.doc_id,
+        )
         return len(points)
 
     # -- leitura -----------------------------------------------------------
