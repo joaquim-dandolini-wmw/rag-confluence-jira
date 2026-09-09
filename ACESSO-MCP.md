@@ -19,17 +19,25 @@ internos direto do chat, com link clicável em todo resultado.
 
 | requisito | valor |
 |---|---|
-| servidor | `192.168.10.211` (rede local) — usuário `joaquimdp` |
-| ou, fora da rede | `100.88.94.82` pela Tailscale |
-| porta | 22/tcp, liberada **apenas** para `192.168.10.0/24` |
+| servidor, rede da empresa | **`10.2.1.132`** — usuário `joaquimdp` |
+| porta | 22/tcp, liberada para `10.0.0.0/8` (empresa) e `192.168.10.0/24` |
 | autenticação | **chave SSH** — senha não serve, o cliente de IA não tem como digitar |
 
 Você precisa de um cliente SSH. No **Windows 10/11 e no macOS já vem instalado**;
 no Linux é o pacote `openssh`.
 
-> O IP `192.168.10.211` vem de DHCP no Wi-Fi. Se ele mudar, o cliente para de
-> conectar. Reserve o IP no roteador, ou use o nome `cachyos-x8664` se o seu DNS
-> interno resolver.
+Teste primeiro se você alcança a máquina:
+
+```bash
+ping 10.2.1.132
+```
+
+> **O IP é DHCP.** Se a máquina reiniciar ou trocar de rede, ele muda e todos os
+> clientes param de conectar. Reserve o IP no DHCP, ou use o nome
+> `cachyos-x8664` se o DNS interno resolver.
+>
+> A máquina precisa estar com o **cabo de rede conectado**. Só no Wi-Fi ela cai
+> em `10.2.1.132`, que o pessoal da empresa não alcança.
 
 ---
 
@@ -60,7 +68,7 @@ Isso cria dois arquivos. O `.pub` é público e pode ser enviado por chat; o out
 **Linux e macOS:**
 
 ```bash
-ssh-copy-id joaquimdp@192.168.10.211
+ssh-copy-id joaquimdp@10.2.1.132
 ```
 
 Ele vai pedir a senha do `joaquimdp` uma única vez.
@@ -68,7 +76,7 @@ Ele vai pedir a senha do `joaquimdp` uma única vez.
 **Windows (PowerShell)** — não existe `ssh-copy-id`, use isto:
 
 ```powershell
-type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh joaquimdp@192.168.10.211 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh joaquimdp@10.2.1.132 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
 ```
 
 **Sem senha em mãos:** mande o conteúdo do seu `.pub` para o administrador da
@@ -77,7 +85,7 @@ máquina, que acrescenta em `~/.ssh/authorized_keys`.
 ## Passo 3 — testar a conexão
 
 ```bash
-ssh joaquimdp@192.168.10.211 "hostname"
+ssh joaquimdp@10.2.1.132 "hostname"
 ```
 
 Tem que responder `cachyos-x8664` **sem pedir senha**. Se pedir senha, a chave
@@ -91,21 +99,21 @@ o cliente de IA não tem como responder a um pedido de senha.
 Um comando:
 
 ```bash
-claude mcp add atlassian-kb -- ssh joaquimdp@192.168.10.211 "cd ~/Documentos/rag && PYTHONPATH=/home/joaquimdp/Documentos/rag .venv/bin/python -m mcp_server.server"
+claude mcp add atlassian-kb -- ssh joaquimdp@10.2.1.132 "cd ~/Documentos/rag && PYTHONPATH=/home/joaquimdp/Documentos/rag .venv/bin/python -m mcp_server.server"
 ```
 
 Confira:
 
 ```bash
 claude mcp list
-# atlassian-kb: ssh joaquimdp@192.168.10.211 ... - ✔ Connected
+# atlassian-kb: ssh joaquimdp@10.2.1.132 ... - ✔ Connected
 ```
 
 O padrão instala **só no projeto onde você rodou o comando**. Para ter a busca
 em qualquer pasta, acrescente `-s user`:
 
 ```bash
-claude mcp add atlassian-kb -s user -- ssh joaquimdp@192.168.10.211 "cd ~/Documentos/rag && PYTHONPATH=/home/joaquimdp/Documentos/rag .venv/bin/python -m mcp_server.server"
+claude mcp add atlassian-kb -s user -- ssh joaquimdp@10.2.1.132 "cd ~/Documentos/rag && PYTHONPATH=/home/joaquimdp/Documentos/rag .venv/bin/python -m mcp_server.server"
 ```
 
 Existe também `-s project`, que grava num `.mcp.json` versionado junto do
@@ -132,7 +140,7 @@ Acrescente o bloco `atlassian-kb` dentro de `mcpServers`:
     "atlassian-kb": {
       "command": "ssh",
       "args": [
-        "joaquimdp@192.168.10.211",
+        "joaquimdp@10.2.1.132",
         "cd ~/Documentos/rag && PYTHONPATH=/home/joaquimdp/Documentos/rag .venv/bin/python -m mcp_server.server"
       ]
     }
@@ -161,7 +169,7 @@ linha para o servidor:
 
 ```bash
 # ERRADO se digitado num terminal: o $HOME é o SEU, não o do servidor
-ssh joaquimdp@192.168.10.211 "PYTHONPATH=$HOME/Documentos/rag ..."
+ssh joaquimdp@10.2.1.132 "PYTHONPATH=$HOME/Documentos/rag ..."
 #   vira PYTHONPATH=/Users/seu.nome/Documentos/rag   -> o servidor não acha nada
 ```
 
@@ -207,7 +215,7 @@ Todo resultado traz a URL de origem — página do Confluence ou issue em
 |---|---|
 | `Permission denied (publickey)` | a chave não está autorizada. Refaça o passo 2 e confira o passo 3 |
 | pede senha | mesma coisa. O cliente de IA não digita senha; a chave é obrigatória |
-| `Connection timed out` | você está fora da `192.168.10.0/24`. Use a Tailscale (`100.88.94.82`) |
+| `Connection timed out` | o IP mudou, ou o cabo de rede da máquina caiu. Confirme com `ping 10.2.1.132` |
 | `Connection refused` | o `sshd` do servidor caiu: `systemctl status sshd` |
 | `✔ Connected` mas a busca dá erro | o Qdrant não está no ar: `docker compose up -d` no servidor |
 | `Failed to connect` sem detalhe | rode o comando do passo 3 na mão; o erro do SSH aparece ali |
@@ -232,7 +240,8 @@ número em `pontos` e `pontos c/ denso`.
 - o acesso ao Jira e ao Confluence é **somente leitura**, sempre;
 - o Qdrant escuta **só em `127.0.0.1`** e não é exposto na rede;
 - o MCP **não sobe serviço de rede**: fala por stdio dentro do túnel SSH;
-- a porta 22 está liberada apenas para `192.168.10.0/24` e para a Tailscale;
+- a porta 22 está liberada apenas para a rede interna (`10.0.0.0/8` e
+  `192.168.10.0/24`), nunca para a internet;
 - a autenticação é chave SSH, revogável tirando a linha correspondente de
   `~/.ssh/authorized_keys` no servidor;
 - o índice contém conteúdo interno dos espaços e projetos configurados. Quem tem
@@ -243,6 +252,6 @@ número em `pontos` e `pontos c/ denso`.
 Para tirar o acesso de alguém, remova a chave dele:
 
 ```bash
-ssh joaquimdp@192.168.10.211
+ssh joaquimdp@10.2.1.132
 nano ~/.ssh/authorized_keys     # apague a linha com o comentário dele
 ```
