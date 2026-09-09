@@ -3,13 +3,20 @@
     python -m indexer.sync extract --only confluence
     python -m indexer.sync extract --only jira --full
     python -m indexer.sync index
+    python -m indexer.sync embed
     python -m indexer.sync run
     python -m indexer.sync reconcile --only jira
+    python -m indexer.sync search "boleto do pedido" --mode hybrid
     python -m indexer.sync status
 
 Extração e indexação são etapas separadas de propósito: a extração fala com
 as instâncias Atlassian e é cara; a indexação lê só o store local. Trocar o
 tamanho da fatia ou reconstruir o índice não toca em nada remoto.
+
+O `embed` é uma terceira etapa pelo mesmo motivo: o BM25 é calculado no cliente
+em microssegundos, o vetor denso custa GPU. Reindexar o sparse não pode obrigar
+a reembedar. A ordem em `run` é extract -> index -> embed, porque o embed faz
+UPDATE do vetor denso em ponto que já existe.
 """
 
 from __future__ import annotations
@@ -18,10 +25,20 @@ import argparse
 import logging
 import sys
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
-from config import Config, ConfigError, load_config, setup_logging
+from config import (
+    DEFAULT_EMBED_BATCH_SIZE,
+    EMBED_DEVICES,
+    SEARCH_MODES,
+    Config,
+    ConfigError,
+    EmbeddingConfig,
+    load_config,
+    setup_logging,
+)
 from connectors.confluence_legacy import (
     ConfluenceAuthError,
     ConfluenceClient,
@@ -36,20 +53,42 @@ from connectors.jira_server import (
     JiraRequestError,
 )
 from indexer.chunking import DEFAULT_MAX_CHARS, DEFAULT_OVERLAP, chunk_document
+from indexer.embeddings import DenseEmbedder, EmbeddingError
 from indexer.index import IndexError_, KnowledgeIndex
-from store.documents import SOURCE_CONFLUENCE, SOURCE_JIRA, DocumentStore
+from store.documents import (
+    SOURCE_CONFLUENCE,
+    SOURCE_JIRA,
+    Document,
+    DocumentStore,
+)
 
 LOG = logging.getLogger("indexer.sync")
 
 COMMIT_EVERY = 25
 
+# Quantos batches de embedding são acumulados antes de descarregar no Qdrant.
+# Com EMBED_BATCH_SIZE=16 dá 1.024 fatias por descarga: material suficiente
+# para a ordenação por comprimento reduzir padding, e ~230 documentos de
+# progresso em risco numa queda, o que é aceitável.
+FLUSH_BATCHES = 64
+# Pontos por requisição de update_vectors. 1.024 vetores de 1.024 floats numa
+# só requisição passam de 20 MB de JSON; 256 mantém o payload em poucos MB.
+UPDATE_BATCH = 256
 
-def _open_index(cfg: Config) -> KnowledgeIndex:
+
+def _open_index(
+    cfg: Config,
+    *,
+    embedding: EmbeddingConfig | None = None,
+    embedder: DenseEmbedder | None = None,
+) -> KnowledgeIndex:
     return KnowledgeIndex(
         cfg.qdrant_url,
         cfg.collection,
         cfg.fastembed_cache_dir,
         allow_download=cfg.allow_model_download,
+        embedding=embedding or cfg.embedding,
+        embedder=embedder,
     )
 
 
@@ -187,6 +226,11 @@ def run_index(
         index.ensure_collection(recreate=recreate)
         if reindex_all or recreate:
             store.mark_all_unindexed()
+            # Reindexar apaga e recria os pontos do documento, e o ponto novo
+            # nasce só com o sparse. Sem invalidar o embedded_hash junto, o
+            # `embed` acharia que já embedou e o vetor denso ficaria vazio para
+            # sempre - sem erro nenhum, o que é pior.
+            store.mark_all_unembedded()
             store.commit()
         elif index.count() == 0 and store.count_indexed() > 0:
             # O indexed_hash mora no store, mas descreve o estado do Qdrant.
@@ -200,6 +244,7 @@ def run_index(
                 extra={"documentos_marcados": store.count_indexed()},
             )
             store.mark_all_unindexed()
+            store.mark_all_unembedded()
             store.commit()
 
         pending_deletions = store.take_index_deletions()
@@ -240,6 +285,215 @@ def run_index(
 
     totals["tempo_total_s"] = round(time.monotonic() - started, 2)
     LOG.info("indexação concluída", extra=totals)
+    return totals
+
+
+# --------------------------------------------------------------------------
+# vetor denso (Fase 2)
+# --------------------------------------------------------------------------
+
+def _embed_um_a_um(
+    index: KnowledgeIndex,
+    embedder: DenseEmbedder,
+    store: DocumentStore,
+    lote: Sequence[tuple[Document, Sequence[Any]]],
+    totals: dict[str, Any],
+) -> None:
+    """Reprocessa um lote que falhou, documento a documento.
+
+    Existe para que um documento ruim não custe os outros 230 do lote. Aqui a
+    falha é por documento: loga o doc_id e segue, como no `index`.
+    """
+    for document, chunks in lote:
+        try:
+            vectors = embedder.embed_passages([chunk.text for chunk in chunks])
+            written = index.update_dense(
+                list(zip((chunk.chunk_id for chunk in chunks), vectors)),
+                document.doc_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - um documento ruim não derruba a rodada
+            totals["falhas"] += 1
+            LOG.warning(
+                "documento não pôde ser embedado, seguindo",
+                extra={"doc_id": document.doc_id, "erro": str(exc)},
+            )
+            continue
+        store.mark_embedded(document.doc_id, document.content_hash())
+        totals["documentos"] += 1
+        totals["fatias"] += written
+
+
+def run_embed(
+    cfg: Config,
+    store: DocumentStore,
+    *,
+    reembed_all: bool = False,
+    device: str | None = None,
+    batch_size: int | None = None,
+    max_chars: int = DEFAULT_MAX_CHARS,
+    overlap: int = DEFAULT_OVERLAP,
+) -> dict[str, Any]:
+    """Popula o vetor denso dos pontos que o `index` já criou.
+
+    Não recria a coleção e não faz upsert: os chunk_id são uuid5
+    determinísticos, então o que acontece aqui é UPDATE do vetor denso nos
+    148 mil pontos que já existem. Recriar a coleção jogaria fora o BM25.
+    """
+    embed_cfg = cfg.embedding
+    if device:
+        embed_cfg = replace(embed_cfg, device=device)
+    if batch_size:
+        embed_cfg = replace(embed_cfg, batch_size=batch_size)
+
+    started = time.monotonic()
+    totals: dict[str, Any] = {
+        "documentos": 0, "fatias": 0, "falhas": 0,
+        "device": embed_cfg.device, "batch_size": embed_cfg.batch_size,
+        "modelo": embed_cfg.model_name,
+    }
+
+    embedder = DenseEmbedder(embed_cfg)
+    with _open_index(cfg, embedding=embed_cfg, embedder=embedder) as index:
+        if not index.collection_exists():
+            raise IndexError_(
+                f"a coleção {cfg.collection!r} não existe. Rode "
+                "`python -m indexer.sync index` primeiro: o `embed` atualiza o "
+                "vetor denso de pontos existentes, não cria pontos."
+            )
+        if reembed_all:
+            store.mark_all_unembedded()
+            store.commit()
+        else:
+            com_denso = index.count_dense()
+            if com_denso == 0 and store.count_embedded() > 0:
+                # Mesma armadilha do indexed_hash: o embedded_hash mora no
+                # store e descreve o estado do Qdrant. Store trazido de outra
+                # máquina, ou coleção recriada, chega afirmando que tudo já foi
+                # embedado com o denso vazio - e o comando não faria nada.
+                LOG.warning(
+                    "nenhum ponto tem vetor denso mas o store diz que já foi "
+                    "embedado; marcando tudo como pendente",
+                    extra={"documentos_marcados": store.count_embedded()},
+                )
+                store.mark_all_unembedded()
+                store.commit()
+
+        pendentes = store.count_pending_embed()
+        LOG.info(
+            "embed iniciado",
+            extra={"pendentes": pendentes, "device": embed_cfg.device,
+                   "batch_size": embed_cfg.batch_size},
+        )
+        if pendentes:
+            # Paga a carga do modelo e o primeiro kernel fora da medição, para
+            # que as fatias/s reportadas sejam de regime e não de aquecimento.
+            embedder.warmup()
+
+        # Múltiplo do batch para que nenhum batch saia pela metade, e grande o
+        # bastante para a ordenação por comprimento ter material com que
+        # trabalhar. Também é a granularidade do progresso salvo: uma queda
+        # custa no máximo este lote.
+        flush_chunks = max(embed_cfg.batch_size * FLUSH_BATCHES, embed_cfg.batch_size)
+        totals["flush_fatias"] = flush_chunks
+
+        # O lote atravessa documentos, e não para no fim de cada um. A mediana
+        # é de 4,4 fatias por documento: embedar documento a documento nunca
+        # encheria o batch e o overhead por chamada dominaria - medido, 13
+        # fatias/s contra 89. Acumular também melhora o padding, porque o
+        # sentence-transformers ordena o lote inteiro por comprimento antes de
+        # fatiar em batches.
+        lote: list[tuple[Document, list[Any]]] = []
+        fatias_no_lote = 0
+
+        def descarregar() -> None:
+            """Embeda o lote acumulado e grava o progresso dele."""
+            nonlocal fatias_no_lote
+            if not lote:
+                return
+            textos = [chunk.text for _, chunks in lote for chunk in chunks]
+            ids = [chunk.chunk_id for _, chunks in lote for chunk in chunks]
+            try:
+                vectors = embedder.embed_passages(textos)
+                for inicio in range(0, len(ids), UPDATE_BATCH):
+                    fim = inicio + UPDATE_BATCH
+                    index.update_dense(
+                        list(zip(ids[inicio:fim], vectors[inicio:fim])),
+                        lote[0][0].doc_id,
+                    )
+            except Exception as exc:  # noqa: BLE001 - o lote cai para documento a documento
+                LOG.warning(
+                    "lote falhou, reprocessando documento a documento",
+                    extra={"documentos_no_lote": len(lote), "erro": str(exc)},
+                )
+                _embed_um_a_um(index, embedder, store, lote, totals)
+            else:
+                for document, chunks in lote:
+                    store.mark_embedded(document.doc_id, document.content_hash())
+                    totals["documentos"] += 1
+                    totals["fatias"] += len(chunks)
+            lote.clear()
+            fatias_no_lote = 0
+            store.commit()
+            # Uma carga inicial leva dezenas de minutos. Sem esta linha o
+            # comando fica silencioso o tempo todo e não há como saber se
+            # avança, qual o ritmo nem quanto falta - mesmo motivo da linha de
+            # progresso da extração do Confluence.
+            decorrido = time.monotonic() - started
+            ritmo = totals["fatias"] / decorrido if decorrido > 0 else 0.0
+            restantes = max(pendentes - totals["documentos"], 0)
+            LOG.info(
+                "progresso do embed",
+                extra={
+                    "documentos": totals["documentos"],
+                    "de": pendentes,
+                    "pct": round(100 * totals["documentos"] / pendentes, 1)
+                    if pendentes
+                    else 100.0,
+                    "fatias": totals["fatias"],
+                    "fatias_por_s": round(ritmo, 1),
+                    "falhas": totals["falhas"],
+                    "eta_min": round(
+                        restantes
+                        * (totals["fatias"] / max(totals["documentos"], 1))
+                        / ritmo
+                        / 60,
+                        1,
+                    )
+                    if ritmo > 0
+                    else None,
+                },
+            )
+
+        try:
+            for document in store.iter_pending_embed():
+                chunks = chunk_document(
+                    document.doc_id,
+                    document.title,
+                    document.body_text,
+                    max_chars=max_chars,
+                    overlap=overlap,
+                )
+                if not chunks:
+                    store.mark_embedded(document.doc_id, document.content_hash())
+                    continue
+                lote.append((document, chunks))
+                fatias_no_lote += len(chunks)
+                if fatias_no_lote >= flush_chunks:
+                    descarregar()
+            descarregar()
+        finally:
+            # Progresso parcial é progresso: uma queda no meio não pode fazer a
+            # próxima rodada começar do zero.
+            store.commit()
+
+        totals["pontos_com_denso"] = index.count_dense()
+
+    elapsed = time.monotonic() - started
+    totals["tempo_total_s"] = round(elapsed, 2)
+    totals["fatias_por_segundo"] = (
+        round(totals["fatias"] / elapsed, 1) if elapsed > 0 else 0.0
+    )
+    LOG.info("embed concluído", extra=totals)
     return totals
 
 
@@ -346,15 +600,69 @@ def _build_parser() -> argparse.ArgumentParser:
     index_cmd.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
     index_cmd.add_argument("--overlap", type=int, default=DEFAULT_OVERLAP)
 
-    run_cmd = subparsers.add_parser("run", help="extract + index")
+    embed_cmd = subparsers.add_parser(
+        "embed", help="popula o vetor denso dos pontos já indexados"
+    )
+    embed_cmd.add_argument(
+        "--reembed-all", action="store_true",
+        help="ignora o progresso e reembeda tudo a partir do store",
+    )
+    embed_cmd.add_argument(
+        "--device", choices=EMBED_DEVICES,
+        help="sobrepõe EMBED_DEVICE (o PyTorch ROCm usa \"cuda\" para a AMD)",
+    )
+    embed_cmd.add_argument(
+        "--batch-size", type=int,
+        help=f"sobrepõe EMBED_BATCH_SIZE (padrão medido: {DEFAULT_EMBED_BATCH_SIZE})",
+    )
+    embed_cmd.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
+    embed_cmd.add_argument("--overlap", type=int, default=DEFAULT_OVERLAP)
+
+    run_cmd = subparsers.add_parser("run", help="extract + index + embed")
     add_scope(run_cmd)
     add_extract_flags(run_cmd)
+    run_cmd.add_argument(
+        "--no-embed", dest="embed", action="store_false", default=True,
+        help="para depois do index, sem popular o vetor denso",
+    )
+    run_cmd.add_argument("--device", choices=EMBED_DEVICES)
+    run_cmd.add_argument("--batch-size", type=int)
 
     reconcile = subparsers.add_parser("reconcile", help="remove o que sumiu na origem")
     add_scope(reconcile)
 
+    search_cmd = subparsers.add_parser(
+        "search", help="consulta o índice; serve para comparar os modos A/B"
+    )
+    search_cmd.add_argument("query")
+    search_cmd.add_argument("--mode", choices=SEARCH_MODES, default="auto")
+    search_cmd.add_argument("--limit", type=int, default=5)
+    search_cmd.add_argument("--source", choices=[SOURCE_CONFLUENCE, SOURCE_JIRA])
+    search_cmd.add_argument("--project")
+    search_cmd.add_argument("--space-key", dest="space_key")
+
     subparsers.add_parser("status", help="mostra o estado do store e do índice")
     return parser
+
+
+def _run_search(cfg: Config, args: argparse.Namespace) -> None:
+    started = time.monotonic()
+    with _open_index(cfg) as index:
+        hits = index.search(
+            args.query,
+            limit=args.limit,
+            mode=args.mode,
+            source=args.source,
+            project=args.project,
+            space_key=args.space_key,
+        )
+    elapsed_ms = (time.monotonic() - started) * 1000
+    print(f"modo={args.mode}  resultados={len(hits)}  {elapsed_ms:.0f} ms")
+    for position, hit in enumerate(hits, start=1):
+        print(f"{position:>2}. [{hit.score:.4f}] {hit.title}")
+        print(f"    {hit.url}")
+        trecho = " ".join(hit.text.split())[:160]
+        print(f"    {trecho}")
 
 
 def _run_extract(cfg: Config, store: DocumentStore, args: argparse.Namespace) -> dict[str, Any]:
@@ -378,7 +686,8 @@ def _print_status(cfg: Config, store: DocumentStore) -> None:
     print(f"documentos:       {stats.documents}")
     for source, count in sorted(stats.by_source.items()):
         print(f"  {source:<14} {count}")
-    print(f"pendentes:        {stats.pending_index}")
+    print(f"pendentes idx:    {stats.pending_index}")
+    print(f"pendentes denso:  {stats.pending_embed}")
     print(f"cursor jira:      {store.jira_last_updated or '-'}")
     print(f"versoes conf.:    {len(store.confluence_versions())}")
     print(f"delecoes na fila: {len(store.get_state('pending_index_deletions', []) or [])}")
@@ -389,6 +698,11 @@ def _print_status(cfg: Config, store: DocumentStore) -> None:
         with _open_index(cfg) as index:
             print(f"qdrant:           {cfg.qdrant_url} v{index.check_server()}")
             print(f"pontos:           {index.count()}")
+            print(f"pontos c/ denso:  {index.count_dense()}")
+            print(
+                f"embed:            {cfg.embedding.model_name} "
+                f"device={cfg.embedding.device} batch={cfg.embedding.batch_size}"
+            )
     except Exception as exc:  # noqa: BLE001 - status nunca deve abortar
         print(f"qdrant:           indisponível ({exc})")
 
@@ -418,9 +732,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                         max_chars=args.max_chars, overlap=args.overlap,
                     )
                 }
+            elif args.command == "embed":
+                report = {
+                    "embed": run_embed(
+                        cfg, store, reembed_all=args.reembed_all,
+                        device=args.device, batch_size=args.batch_size,
+                        max_chars=args.max_chars, overlap=args.overlap,
+                    )
+                }
             elif args.command == "run":
                 report = _run_extract(cfg, store, args)
                 report["index"] = run_index(cfg, store)
+                # O denso vem DEPOIS do index de propósito: o embed faz update
+                # de vetor em ponto existente, então o ponto tem que existir.
+                if args.embed:
+                    report["embed"] = run_embed(
+                        cfg, store, device=args.device, batch_size=args.batch_size
+                    )
             elif args.command == "reconcile":
                 for source in _sources(args.only, cfg):
                     report[source] = (
@@ -428,6 +756,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         if source == SOURCE_CONFLUENCE
                         else reconcile_jira(cfg, store)
                     )
+            elif args.command == "search":
+                _run_search(cfg, args)
+                return 0
             elif args.command == "status":
                 _print_status(cfg, store)
                 return 0
@@ -436,7 +767,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 report["em"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 store.set_state("last_run", report)
                 store.commit()
-    except (ConfigError, ConfluenceAuthError, JiraAuthError, IndexError_) as exc:
+    except (
+        ConfigError,
+        ConfluenceAuthError,
+        JiraAuthError,
+        IndexError_,
+        EmbeddingError,
+    ) as exc:
         LOG.error("execução abortada", extra={"erro": str(exc)})
         print(f"\n{exc}\n", file=sys.stderr)
         return 1
