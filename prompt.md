@@ -42,55 +42,108 @@ contra os dados reais — estes três pares NÃO encontram o mesmo documento hoj
 Fechar essa lacuna é exatamente o objetivo da Fase 2.
 
 ═══════════════════════════════════════════════════════════
-HARDWARE E RESTRIÇÕES DESTA MÁQUINA
+ESTA MÁQUINA — JÁ INSPECIONADA E PARCIALMENTE PREPARADA
 ═══════════════════════════════════════════════════════════
 
-GPU AMD Radeon RX 6900 XT, 16 GB VRAM, RDNA2 (gfx1030). Linux.
+GPU AMD Radeon RX 6900 XT, 16 GB VRAM, RDNA2 (gfx1030).
 
-JÁ INSPECIONADO REMOTAMENTE — confirme, mas não redescubra do zero:
+  distro     CachyOS (base Arch), kernel 7.2.3-1-cachyos
+  usuário    joaquimdp (uid 1000), home /home/joaquimdp, shell FISH
+  grupos     wheel, video, docker, storage, audio — NÃO está em 'render'
+  RAM        30 GB
+  disco      /home com 380 GB livres
+  GPU        03:00.0 Navi 21 [RX 6800/6800 XT/6900 XT]  <- a discreta
+             12:00.0 Raphael  <- iGPU do Ryzen, integrada
+  ROCm       AUSENTE
+  Docker     29.7.2, joaquimdp já no grupo docker, funciona sem sudo
+  Python     3.14.7 no sistema; 3.12.14 já instalado via uv
+  uv         0.12.11 em ~/.local/bin
 
-  distro    CachyOS (base Arch), kernel 7.2.3-1-cachyos
-  usuário   joaquimdp (uid 1000), home /home/joaquimdp, shell FISH
-  grupos    wheel, video, docker, storage, audio — NÃO está em 'render'
-  GPU       03:00.0 Navi 21 [RX 6800/6800 XT/6900 XT]  (a discreta, a que interessa)
-            12:00.0 Raphael  (iGPU do Ryzen, integrada)
-  ROCm      AUSENTE (rocminfo e rocm-smi não existem)
-  Docker    29.7.2, já instalado, joaquimdp já está no grupo docker
-  Python    3.14.7 do sistema; NÃO existe 3.12
-
-QUATRO CONSEQUÊNCIAS DISSO, que você precisa tratar:
-
-  a) O PyTorch NÃO tem wheel para Python 3.14 em nenhuma variante (ROCm, CUDA
-     ou CPU). O 3.12 tem que ser providenciado. No Arch ele não está nos
-     repositórios oficiais; `uv python install 3.12` resolve sem tocar no
-     Python do sistema. Confirme antes de escolher o caminho.
-
-  b) joaquimdp precisa entrar no grupo 'render' para o ROCm acessar /dev/kfd.
-     Ele já está em 'video', que sozinho não basta.
-
-  c) São DUAS GPUs. O ROCm vai enumerar as duas e o dispositivo 0 pode cair na
-     iGPU Raphael. Descubra o índice da Navi 21 e fixe com HIP_VISIBLE_DEVICES
-     ou ROCR_VISIBLE_DEVICES. Não presuma que device 0 é a placa certa.
-
-  d) O shell é fish: `export VAR=valor` não funciona. Variável persistente é
-     `set -Ux HSA_OVERRIDE_GFX_VERSION 10.3.0`. Para o usuário de serviço e
-     para o cron, prefira um arquivo de ambiente lido explicitamente, que não
-     depende do shell interativo.
-
+RESTRIÇÕES:
 - Rede interna. Nenhum conteúdo sai da rede.
 - Qdrant NUNCA exposto na rede: bind em 127.0.0.1 apenas.
-- Nada instalado no Python do sistema. Tudo em venv isolado.
+- Nada instalado no Python do sistema.
 - Acesso ao Jira e ao Confluence é SOMENTE LEITURA, sempre.
 
-═══════════════════════════════════════════════════════════
-COMECE INSPECIONANDO. NÃO INSTALE NADA AINDA.
-═══════════════════════════════════════════════════════════
+───────────────────────────────────────────────────────────
+O QUE JÁ ESTÁ PRONTO E VERIFICADO EM ~/Documentos/rag
+───────────────────────────────────────────────────────────
 
-Me relate, sem presumir nada: distribuição e versão, kernel, CPU, RAM, espaço
-em disco livre, saída de lspci para a GPU, se já existe ROCm e qual versão, se
-existe Docker, e quais Pythons estão disponíveis.
+O diretório de trabalho é /home/joaquimdp/Documentos/rag. Ele já contém:
 
-Depois me apresente o plano e ESPERE MINHA APROVAÇÃO antes de instalar.
+  .venv/                  Python 3.12.14, criado com uv, com todas as
+                          dependências da Fase 1 instaladas
+  data/documents.sqlite3  33.592 documentos já extraídos (8.662 Confluence
+                          + 24.930 Jira). sha256 conferido contra a origem:
+                          c7a0ef25ae851da20680fd5b68daf4fd9f55e238280645e54623b59e19c49e10
+  models/fastembed/       artefato BM25 pré-cacheado (runtime é offline)
+  .env                    credenciais, chmod 600
+  o repositório           clonado e atualizado
+
+E já foi validado nesta máquina:
+
+  docker compose up -d        Qdrant 1.19.1 no ar, LISTEN só em 127.0.0.1
+  indexer.sync index          148.085 pontos reconstruídos em 2m27s
+  indexer.sync index (2x)     processa zero — idempotente
+  pytest tests/ -q            72 testes passando
+  buscas de aceite            acento indiferente, filtros por source e
+                              space_key funcionando, URL em todo resultado
+
+PORTANTO: A PARTE B (MIGRAÇÃO) ESTÁ CONCLUÍDA. Não reextraia nada do
+Atlassian e não recrie o venv. Apenas confirme o estado com:
+
+    cd ~/Documentos/rag && export PYTHONPATH=$HOME/Documentos/rag
+    docker compose up -d
+    .venv/bin/python -m indexer.sync status
+    .venv/bin/python -m pytest tests/ -q
+
+Você deve ver 33.592 documentos, 0 pendentes, 148.085 pontos e 72 testes
+verdes. Se vir isso, vá direto para a PARTE A.
+
+───────────────────────────────────────────────────────────
+QUATRO ARMADILHAS DESTA MÁQUINA, JÁ MAPEADAS
+───────────────────────────────────────────────────────────
+
+  a) O PyTorch NÃO tem wheel para Python 3.14 em nenhuma variante. Por isso
+     o venv já está em 3.12.14, instalado com `uv python install 3.12` sem
+     tocar no Python do sistema. Use ESTE venv; não crie outro.
+
+  b) joaquimdp precisa entrar no grupo 'render' para o ROCm acessar
+     /dev/kfd. Ele já está em 'video', que sozinho não basta. Isso exige
+     sudo e relogin para valer.
+
+  c) São DUAS GPUs. O ROCm vai enumerar as duas e o device 0 pode ser a
+     iGPU Raphael, não a Navi 21. Descubra o índice correto e fixe com
+     HIP_VISIBLE_DEVICES ou ROCR_VISIBLE_DEVICES. Não presuma device 0.
+
+  d) O shell é fish: `export VAR=valor` não funciona. Variável persistente
+     é `set -Ux HSA_OVERRIDE_GFX_VERSION 10.3.0`. Para o usuário de serviço
+     e para o cron prefira um arquivo de ambiente lido explicitamente, que
+     não depende de shell interativo. Ao rodar scripts bash por SSH, use
+     `ssh host bash -s < script`, porque fish não entende sintaxe bash.
+
+───────────────────────────────────────────────────────────
+DOIS DEFEITOS JÁ CORRIGIDOS QUE EXPLICAM DECISÕES DO CÓDIGO
+───────────────────────────────────────────────────────────
+
+Ambos apareceram justamente nesta migração. Não os reintroduza.
+
+  1. indexed_hash mora no document store mas descreve o estado do Qdrant.
+     Ao trazer o store para cá, ele afirmava "tudo indexado" com a coleção
+     vazia, e a indexação processou 5 fatias em vez de 148.085. Hoje o
+     código detecta coleção vazia com store cheio e remarca tudo sozinho.
+
+  2. Uma falha transitória parava a indexação INTEIRA em silêncio, com
+     código de saída 0. O iter_pending_index reconsultava o topo da fila e
+     abortava quando o último do lote seguia pendente. Agora pagina por
+     doc_id crescente, então o cursor avança mesmo quando um documento
+     falha, e delete/upsert têm retry com backoff.
+
+     O motivo do retry importa para a Fase 2: esta máquina é rápida o
+     bastante para que o pool HTTP do cliente pegue conexões que o Qdrant
+     já fechou por keep-alive, o que chega como "connection reset by peer".
+     Aconteceu 3 vezes em 67 mil requisições. O comando `embed` vai fazer
+     um volume parecido — trate a mesma classe de erro lá.
 
 ═══════════════════════════════════════════════════════════
 PARTE A — INFRAESTRUTURA
@@ -161,25 +214,13 @@ DUAS PERGUNTAS PARA RESPONDER COM MEDIÇÃO, NÃO COM ESTIMATIVA:
     diga o que é realista, não o que é teoricamente possível.
 
 ═══════════════════════════════════════════════════════════
-PARTE B — MIGRAÇÃO (nada de reextrair do Atlassian)
+PARTE B — MIGRAÇÃO: JÁ CONCLUÍDA
 ═══════════════════════════════════════════════════════════
 
-B.1 Clone o repositório.
-B.2 Copie de mim, por scp, dois arquivos que NÃO estão no git:
-      data/documents.sqlite3   (78 MB, os 33.592 documentos já extraídos)
-      .env                     (credenciais; confira o chmod 600)
-B.3 Copie também models/fastembed (132 KB, o artefato BM25 pré-cacheado) OU
-    rode scripts/precache_models.py — o runtime é offline por padrão e falha
-    com mensagem clara se o artefato faltar.
-B.4 Suba o Qdrant e rode:  python -m indexer.sync index
-    Deve reconstruir as 148.085 fatias em ~6 minutos, com ZERO chamadas ao
-    Atlassian. Confirme com  python -m indexer.sync status.
-    O código detecta sozinho o caso "store cheio, coleção vazia" e remarca
-    tudo como pendente; se por algum motivo ele indexar quase nada, force com
-    python -m indexer.sync index --reindex-all.
-B.5 Rode a suíte: pytest tests/ -q — são 72 testes, todos devem passar.
+Feita remotamente antes desta sessão. Veja a seção "O QUE JÁ ESTÁ PRONTO"
+acima e apenas rode os quatro comandos de confirmação listados lá.
 
-Só siga para a Parte C depois que B.4 e B.5 estiverem verdes.
+Só siga para a PARTE C depois que a PARTE A estiver fechada.
 
 ═══════════════════════════════════════════════════════════
 PARTE C — FASE 2: BUSCA HÍBRIDA
@@ -276,7 +317,12 @@ Vou usar clientes de IA a partir da minha estação de trabalho, não desta
 máquina. A decisão é: manter o transporte stdio e alcançá-lo por SSH.
 
   No cliente, o comando vira:
-    ssh esta-maquina "cd /opt/rag && .venv/bin/python -m mcp_server.server"
+    ssh joaquimdp@cachyos-x8664 "cd ~/Documentos/rag && PYTHONPATH=$HOME/Documentos/rag .venv/bin/python -m mcp_server.server"
+
+O acesso à máquina é por Tailscale SSH. A ACL da tailnet precisa liberar o
+usuário joaquimdp com "action": "accept" — com "check" o Tailscale exige
+autenticação pelo navegador a cada sessão, e o cliente de IA não tem como
+abrir navegador.
 
 Motivo: o Qdrant continua em 127.0.0.1, não sobe serviço de rede novo, e a
 autenticação é a chave SSH que já administro. Não exponha o MCP por HTTP nem
@@ -306,11 +352,12 @@ COMO VAMOS TRABALHAR
 
 Uma etapa por vez, esperando meu OK entre elas, nesta ordem:
 
-  1. inspeção da máquina + plano para aprovação
+  1. confirmar o estado atual (os quatro comandos da Parte B) + plano da
+     Parte A para aprovação
   2. Parte A (infraestrutura), terminando com o teste de sanidade do e5
-  3. Parte B (migração), terminando com index + 72 testes verdes
-  4. Parte C (Fase 2), na ordem C.1 -> C.5
+  3. Parte C (Fase 2), na ordem C.1 -> C.5
   5. critérios de aceite, com a comparação lado a lado
   6. SETUP.md
 
-AGORA: só a inspeção. Não instale nada. Me mostre o que encontrou e o plano.
+AGORA: rode os quatro comandos de confirmação da Parte B e me mostre o
+resultado, junto com o plano da Parte A. Não instale nada ainda.
