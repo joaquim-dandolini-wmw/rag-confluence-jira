@@ -411,9 +411,84 @@ scripts/precache_models.py       pré-cache do BM25 para operação offline
 tests/                           parser e chunking
 ```
 
-## Fase 2 (não implementada)
+## Fase 2 — busca híbrida (implementada)
 
-Camada de embeddings densos e busca híbrida. O schema do Qdrant já declara o
-vetor denso de 1024 dimensões, vazio, justamente para que a Fase 2 não exija
-migração de schema nem reextração: bastará popular o vetor a partir do document
-store que já existe.
+Camada de embeddings densos sobre o mesmo índice. O schema já declarava o vetor
+denso de 1024 dimensões vazio, então a Fase 2 **não exigiu migração de schema
+nem reextração**: o comando `embed` fez UPDATE do vetor nos 148.085 pontos que
+já existiam, lendo só o document store.
+
+```
+intfloat/multilingual-e5-large   1024 dim, fp16, normalizado em L2
+prefixos                          "query: " na consulta, "passage: " no documento
+fusão                             RRF ponderada no servidor (prefetch + RrfQuery)
+modos                             auto | bm25 | dense | hybrid   (padrão: auto)
+```
+
+Carga inicial medida na RX 6900 XT: **148.085 fatias em 18 minutos**, 135,6
+fatias/s, zero falhas. Segunda execução processa 0 documentos.
+
+```bash
+python -m indexer.sync embed
+python -m indexer.sync search "cobrança bancária"            # auto -> dense
+python -m indexer.sync search "VENDAS-14993"                 # auto -> bm25
+python -m indexer.sync search "boleto" --mode hybrid         # forçando, para A/B
+```
+
+Resultados são deduplicados por documento: a melhor fatia de cada um. Sem isso,
+um documento longo ocupava 3 das 5 vagas com fatias vizinhas.
+
+### O que o denso acrescenta, e o que ele não acrescenta
+
+Medido na instância real, com consulta em **sinônimo puro** — nenhuma palavra de
+conteúdo em comum com o documento alvo. O número é a posição do alvo:
+
+| consulta | alvo | bm25 | denso | híbrido | **auto** |
+|---|---|---|---|---|---|
+| "dados da fatura para pagamento em banco" | *Informações do Boleto Bancário do Pedido* | não acha | 8 | 55 | **8** |
+| "administração de celulares dos vendedores" | *Gerenciamento de Smartphones* | não acha | 13 | 64 | **13** |
+| "falha na compilação do aplicativo móvel" | *Erro ao gerar APP Versão 5.XX* | não acha | 28 | não acha | **28** |
+
+E o custo, com identificador exato (alvo em 1º lugar, 3 execuções):
+
+| consulta | bm25 | denso | híbrido | **auto** |
+|---|---|---|---|---|
+| `VENDAS-14993` | 3/3 | 0/3 | 3/3 | **3/3** |
+| `PRUPSYNCPRODUTOS` | 3/3 | 0/3 | **0/3** | **3/3** |
+
+Latência aquecida: bm25 1,7 ms · denso 15,6 ms · híbrido 50,9 ms · **auto 1,7 ms
+em identificador, 15,6 ms em prosa**.
+
+### Por que existe o modo `auto`, e por que ele é o padrão
+
+O plano original previa RRF como resposta única. Ela está implementada e
+ponderada, mas **medida, a fusão não atende os dois critérios ao mesmo tempo** —
+e nenhum peso (testado de 1:2 a 12:1), profundidade de prefetch ou deduplicação
+resolve:
+
+- o RRF soma `1/(k+rank)`, então cada candidato que o BM25 traz ocupa posição
+  boa mesmo sendo irrelevante para uma pergunta em prosa, e empurra o acerto do
+  denso para baixo;
+- na direção oposta, um documento presente nas duas listas sempre bate um
+  presente em só uma — por isso `PRUPSYNCPRODUTOS`, que só o BM25 acha, perde o
+  topo no híbrido.
+
+Então em vez de um compromisso que perde nos dois lados, **a consulta escolhe o
+instrumento** (`indexer/index.py:classify_query`):
+
+| formato da consulta | modo | por quê |
+|---|---|---|
+| só um identificador — `VENDAS-14993`, `PRUPSYNCPRODUTOS` | `bm25` | é onde o exato ganha e o denso não tem o que oferecer |
+| prosa, sem identificador | `dense` | é onde o sinônimo vive |
+| identificador dentro de uma frase | `hybrid` | os dois contribuem |
+
+Siglas curtas da própria base (`APP`, `SQL`, `ERP`) não são confundidas com
+chave. `--mode` continua disponível para comparação A/B.
+
+**O que ainda falta.** Dois dos três alvos de sinônimo ficam nas posições 13 e
+28 — dentro do índice, fora de uma página de 10 resultados. Um **reranker
+cross-encoder** sobre os candidatos os traria para o topo: ele lê consulta e
+documento juntos. Cabe com folga na mesma GPU (o e5 usa 1,87 GiB dos 15,98 GiB
+medidos). É o próximo passo natural, fora do escopo da Fase 2.
+
+Detalhes de infraestrutura, versões exatas e medições: **[SETUP.md](SETUP.md)**.

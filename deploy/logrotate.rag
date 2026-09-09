@@ -1,0 +1,19 @@
+# Rotação dos logs do rag-confluence-jira.
+# Instalar com:  sudo install -m 644 deploy/logrotate.rag /etc/logrotate.d/rag
+#
+# O logging da aplicação é JSON em uma linha por evento, escrito na STDERR e
+# redirecionado pelo cron. A stdout nunca é usada para log: é por onde o
+# servidor MCP fala JSON-RPC.
+#
+# su é obrigatório: o diretório está dentro do home de um usuário sem
+# privilégio, e o logrotate roda como root.
+/home/joaquimdp/Documentos/rag/logs/*.log {
+    su joaquimdp joaquimdp
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 joaquimdp joaquimdp
+}
