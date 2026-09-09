@@ -260,6 +260,12 @@ class DocumentStore:
             "UPDATE documents SET indexed_hash = ? WHERE doc_id = ?", (content_hash, doc_id)
         )
 
+    def count_indexed(self) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM documents WHERE indexed_hash IS NOT NULL"
+        ).fetchone()
+        return int(row["n"])
+
     def mark_all_unindexed(self) -> None:
         """Força reindexação completa a partir do store, sem tocar no Atlassian."""
         self._conn.execute("UPDATE documents SET indexed_hash = NULL")

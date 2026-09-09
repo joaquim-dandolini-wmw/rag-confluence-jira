@@ -188,6 +188,19 @@ def run_index(
         if reindex_all or recreate:
             store.mark_all_unindexed()
             store.commit()
+        elif index.count() == 0 and store.count_indexed() > 0:
+            # O indexed_hash mora no store, mas descreve o estado do Qdrant.
+            # Ao mover o store para outra máquina - que é justamente o caminho
+            # barato de reconstruir o índice - ele chega afirmando que tudo já
+            # foi indexado enquanto a coleção nova está vazia, e a indexação
+            # não faria nada. Coleção vazia com store cheio só pode ser isso.
+            LOG.warning(
+                "índice vazio mas o store diz que já foi indexado; "
+                "marcando tudo como pendente",
+                extra={"documentos_marcados": store.count_indexed()},
+            )
+            store.mark_all_unindexed()
+            store.commit()
 
         pending_deletions = store.take_index_deletions()
         store.commit()

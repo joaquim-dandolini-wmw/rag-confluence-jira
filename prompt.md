@@ -174,6 +174,9 @@ B.3 Copie também models/fastembed (132 KB, o artefato BM25 pré-cacheado) OU
 B.4 Suba o Qdrant e rode:  python -m indexer.sync index
     Deve reconstruir as 148.085 fatias em ~6 minutos, com ZERO chamadas ao
     Atlassian. Confirme com  python -m indexer.sync status.
+    O código detecta sozinho o caso "store cheio, coleção vazia" e remarca
+    tudo como pendente; se por algum motivo ele indexar quase nada, force com
+    python -m indexer.sync index --reindex-all.
 B.5 Rode a suíte: pytest tests/ -q — são 72 testes, todos devem passar.
 
 Só siga para a Parte C depois que B.4 e B.5 estiverem verdes.
