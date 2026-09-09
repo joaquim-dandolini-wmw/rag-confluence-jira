@@ -869,3 +869,38 @@ def test_auto_com_consulta_vazia_nao_classifica_nem_busca(tmp_path):
     index, fake = index_com_dubles(tmp_path)
     assert index.search("   ", mode="auto") == []
     assert fake.calls == []
+
+
+def test_dedupe_busca_com_folga_para_nao_encurtar_a_pagina(tmp_path):
+    """Um documento pode ocupar o lote inteiro.
+
+    Aconteceu de verdade: com identificador exato as 6 primeiras fatias eram
+    todas da mesma issue e `limit=2` devolvia 1 resultado só.
+    """
+    index = KnowledgeIndex("http://127.0.0.1:1", "c", tmp_path)
+    fake = FakeQdrantComPontos([])
+    index._client = fake  # type: ignore[assignment]
+    index._model = FakeSparse()
+    index.search("x", limit=2, mode="bm25")
+    assert fake.calls[0]["limit"] >= 20
+
+
+def test_pagina_completa_mesmo_com_documento_dominante(tmp_path):
+    pontos = [ponto("jira:A", f"a{i}", 0.9 - i / 100) for i in range(8)]
+    pontos += [ponto("jira:B", "b1", 0.5), ponto("jira:C", "c1", 0.4)]
+    index = KnowledgeIndex("http://127.0.0.1:1", "c", tmp_path)
+    index._client = FakeQdrantComPontos(pontos)  # type: ignore[assignment]
+    index._model = FakeSparse()
+    hits = index.search("x", limit=2, mode="bm25")
+    assert [h.doc_id for h in hits] == ["jira:A", "jira:B"]
+
+
+def test_last_mode_registra_o_modo_resolvido(tmp_path):
+    """Com "auto", quem chamou precisa saber qual dos três respondeu."""
+    index, _ = index_com_dubles(tmp_path)
+    index.search("VENDAS-14993", limit=5, mode="auto")
+    assert index.last_mode == "bm25"
+    index.search("dados da fatura para pagamento", limit=5, mode="auto")
+    assert index.last_mode == "dense"
+    index.search("x", limit=5, mode="hybrid")
+    assert index.last_mode == "hybrid"

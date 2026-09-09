@@ -161,8 +161,9 @@ def search_knowledge_base(
         return _error(
             f"modo {mode!r} desconhecido; aceitos: {', '.join(SEARCH_MODES)}"
         )
+    index = _knowledge_index()
     try:
-        hits = _knowledge_index().search(
+        hits = index.search(
             query, limit=limit, source=source, project=project,
             space_key=space_key, mode=mode,
         )
@@ -171,7 +172,9 @@ def search_knowledge_base(
 
     return {
         "query": query,
-        "mode": mode,
+        # O modo que de fato rodou, não o que foi pedido: com "auto" quem
+        # chamou precisa saber qual dos três respondeu.
+        "mode": index.last_mode or mode,
         "count": len(hits),
         "filters": {"source": source, "project": project, "space_key": space_key},
         "results": [hit.as_dict() for hit in hits],

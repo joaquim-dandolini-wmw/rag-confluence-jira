@@ -656,8 +656,10 @@ def _run_search(cfg: Config, args: argparse.Namespace) -> None:
             project=args.project,
             space_key=args.space_key,
         )
+        modo_usado = index.last_mode or args.mode
     elapsed_ms = (time.monotonic() - started) * 1000
-    print(f"modo={args.mode}  resultados={len(hits)}  {elapsed_ms:.0f} ms")
+    pedido = f" (pedido: {args.mode})" if modo_usado != args.mode else ""
+    print(f"modo={modo_usado}{pedido}  resultados={len(hits)}  {elapsed_ms:.0f} ms")
     for position, hit in enumerate(hits, start=1):
         print(f"{position:>2}. [{hit.score:.4f}] {hit.title}")
         print(f"    {hit.url}")

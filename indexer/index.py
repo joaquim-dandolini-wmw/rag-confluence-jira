@@ -59,9 +59,12 @@ _TRANSIENT_QDRANT = (ResponseHandlingException, ConnectionError, OSError)
 _UPSERT_RETRIES = 3
 
 # Quantas fatias buscar por vaga de resultado quando se deduplica por
-# documento. 3 é suficiente: medido nesta coleção, leva os 3 de 5 documentos
-# distintos do pior caso para 5 de 5.
-_DEDUPE_OVERFETCH = 3
+# documento, mais uma folga fixa. A folga existe porque um único documento
+# pode ocupar o lote inteiro: com identificador exato, as 6 primeiras fatias
+# eram todas da mesma issue e `limit=2` devolvia 1 resultado só.
+_DEDUPE_OVERFETCH = 5
+_DEDUPE_FLOOR = 20
+_DEDUPE_CAP = 300
 
 # Identificador desta base: chave de projeto (VENDAS-14993, ERR-4012) ou nome
 # de objeto de banco/procedure em caixa alta (PRUPSYNCPRODUTOS, VLCHAVE).
@@ -198,6 +201,10 @@ class KnowledgeIndex:
         self._model: Any | None = None
         self._embedding_cfg = embedding
         self._embedder = embedder
+        # Modo efetivamente usado na última busca. Com "auto" o chamador não
+        # sabe qual dos três rodou, e essa informação é o que permite a
+        # comparação A/B e o diagnóstico de um resultado ruim.
+        self.last_mode: str | None = None
 
     def close(self) -> None:
         self._client.close()
@@ -462,12 +469,17 @@ class KnowledgeIndex:
         if mode == "auto":
             mode = classify_query(query)
             LOG.debug("modo escolhido pelo auto", extra={"modo": mode})
+        self.last_mode = mode
 
         # Sem deduplicar, um documento longo ocupa várias vagas com fatias
         # vizinhas: medido, 3 de 5 resultados vinham de 3 documentos só. Para
         # quem consome (o modelo, via MCP) isso é contexto desperdiçado. Busca-se
         # mais fundo e devolve-se a MELHOR fatia de cada documento.
-        fetch = limit * _DEDUPE_OVERFETCH if dedupe_by_document else limit
+        fetch = (
+            min(limit * _DEDUPE_OVERFETCH + _DEDUPE_FLOOR, _DEDUPE_CAP)
+            if dedupe_by_document
+            else limit
+        )
 
         conditions = [
             models.FieldCondition(key=key, match=models.MatchValue(value=value))
