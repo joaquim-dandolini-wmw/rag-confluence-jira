@@ -441,6 +441,7 @@ indexer/sync.py                  CLI extract / index / run / reconcile / status
 mcp_server/server.py             quatro ferramentas MCP
 scripts/precache_models.py       pré-cache do BM25 para operação offline
 tests/                           parser, chunking, transporte, escopo, embeddings
+MAQUINA-NOVA.md                  subir em máquina nova e migrar o índice
 ```
 
 ## Fase 2 — busca híbrida (implementada)
@@ -560,3 +561,6 @@ vocabulário do domínio (um dicionário de sinônimos na consulta, ou fine-tuni
 não mais um modelo genérico.
 
 Detalhes de infraestrutura, versões exatas e medições: **[SETUP.md](SETUP.md)**.
+
+Para levantar tudo isso em outra máquina, e passar o store e o índice para lá:
+**[MAQUINA-NOVA.md](MAQUINA-NOVA.md)**.
