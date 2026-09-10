@@ -20,6 +20,10 @@ from typing import Any, Iterator, Sequence
 
 LOG = logging.getLogger("store.documents")
 
+# Quanto um escritor espera pelo outro antes de desistir. Generoso de
+# propósito: o custo de esperar é zero, o de falhar é a rodada inteira.
+BUSY_TIMEOUT_MS = 30_000
+
 SOURCE_CONFLUENCE = "confluence"
 SOURCE_JIRA = "jira"
 
@@ -129,6 +133,13 @@ class DocumentStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        # O WAL admite um escritor por vez. SEM este timeout o segundo escritor
+        # não espera: falha na hora com "database is locked" e derruba a rodada.
+        # Aconteceu em produção — o cron do Jira, que roda a cada 15 minutos,
+        # colidiu com uma extração longa do Confluence e a matou no meio.
+        # Com o timeout os dois se intercalam: quem chega depois aguarda o
+        # commit do outro, que dura milissegundos.
+        self._conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
         self._conn.executescript(_SCHEMA)
         self._migrate()
         self._conn.commit()

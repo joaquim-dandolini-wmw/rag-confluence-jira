@@ -192,3 +192,30 @@ def test_escopo_vazio_continua_abortando(monkeypatch):
     cfg = load_config(dotenv=False)
     assert any("CONFLUENCE_SPACES" in e for e in cfg._errors)
     assert cfg.confluence is None
+
+
+# -- concorrência entre o cron do Jira e a extração do Confluence ------------
+
+def test_dois_escritores_nao_derrubam_a_rodada(tmp_path):
+    """Aconteceu em produção: "database is locked" matou a extração.
+
+    O cron do Jira roda a cada 15 minutos e abre o mesmo SQLite que uma
+    extração longa do Confluence está usando. Com WAL só há um escritor por
+    vez; sem busy_timeout o segundo falha na hora em vez de esperar.
+    """
+    caminho = tmp_path / "s.sqlite3"
+    with DocumentStore(caminho) as a, DocumentStore(caminho) as b:
+        a.upsert(pagina("espaco-a", 1))
+        a.commit()
+        # b escreve enquanto a conexão de a segue aberta
+        b.upsert(pagina("espaco-b", 1))
+        b.commit()
+        assert b.confluence_space_keys() == {"espaco-a", "espaco-b"}
+
+
+def test_busy_timeout_esta_configurado(tmp_path):
+    from store.documents import BUSY_TIMEOUT_MS
+
+    with DocumentStore(tmp_path / "s.sqlite3") as store:
+        (valor,) = store._conn.execute("PRAGMA busy_timeout").fetchone()
+    assert valor == BUSY_TIMEOUT_MS
