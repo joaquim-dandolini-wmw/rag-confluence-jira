@@ -401,7 +401,7 @@ os post-mortems.
 .venv/bin/python -m pytest tests/ -q
 ```
 
-228 testes, nenhum depende de instância real. Cobrem, no parser: HTML mal
+238 testes, nenhum depende de instância real. Cobrem, no parser: HTML mal
 formado com tag não fechada, entidades acentuadas, wiki markup residual,
 tabela sem `tbody`, lista aninhada, página vazia e página só com whitespace,
 bloco de código em CDATA nas duas formas de macro, e link interno

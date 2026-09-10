@@ -262,3 +262,104 @@ def test_pagina_inicial_serve_a_tela(cliente) -> None:
     r = client.get("/")
     assert r.status_code == 200
     assert "rag · painel" in r.text
+
+
+# --------------------------------------------------------------------------
+# expor na rede: a trava e a credencial
+# --------------------------------------------------------------------------
+
+def test_loopback_dispensa_senha() -> None:
+    from panel.server import exposure_error, is_loopback
+
+    for host in ("127.0.0.1", "localhost", "::1", ""):
+        assert is_loopback(host)
+        assert exposure_error(host, "", False) is None
+
+
+def test_rede_sem_senha_nao_sobe() -> None:
+    """Configuração que achata controle de acesso aborta, como no resto do projeto."""
+    from panel.server import exposure_error
+
+    problema = exposure_error("0.0.0.0", "", False)
+    assert problema is not None
+    assert "PANEL_PASSWORD" in problema
+    assert "crontab" in problema
+
+
+def test_rede_com_senha_sobe() -> None:
+    from panel.server import exposure_error
+
+    assert exposure_error("0.0.0.0", "uma-senha", False) is None
+    assert exposure_error("10.2.1.132", "uma-senha", False) is None
+
+
+def test_expor_sem_senha_exige_assumir_o_risco() -> None:
+    from panel.server import exposure_error
+
+    assert exposure_error("0.0.0.0", "", True) is None
+
+
+def _basic(user: str, senha: str) -> dict[str, str]:
+    import base64
+
+    token = base64.b64encode(f"{user}:{senha}".encode()).decode()
+    return {"Authorization": f"Basic {token}"}
+
+
+def test_credencial_certa_e_errada() -> None:
+    from panel.server import credentials_ok
+
+    assert credentials_ok(_basic("admin", "s3nha")["Authorization"], "admin", "s3nha")
+    assert not credentials_ok(_basic("admin", "outra")["Authorization"], "admin", "s3nha")
+    assert not credentials_ok(_basic("outro", "s3nha")["Authorization"], "admin", "s3nha")
+    assert not credentials_ok(None, "admin", "s3nha")
+    assert not credentials_ok("Bearer abc", "admin", "s3nha")
+    # base64 quebrado não pode virar exceção, só recusa
+    assert not credentials_ok("Basic ###", "admin", "s3nha")
+    # sem senha configurada o painel é aberto (só acontece em loopback)
+    assert credentials_ok(None, "admin", "")
+
+
+@pytest.fixture
+def cliente_com_senha(tmp_path, monkeypatch):
+    from starlette.testclient import TestClient
+
+    from panel import server
+
+    monkeypatch.setattr(server.sched, "read_crontab", lambda: "")
+    monkeypatch.setattr(server.sched, "write_crontab", lambda c: None)
+    monkeypatch.setattr(server, "AGENDA_PATH", tmp_path / "agenda.json")
+    return TestClient(server.build_app("admin", "s3nha"))
+
+
+def test_sem_credencial_devolve_401_com_desafio(cliente_com_senha) -> None:
+    r = cliente_com_senha.get("/api/estado")
+    assert r.status_code == 401
+    assert r.headers["www-authenticate"].startswith("Basic realm=")
+
+
+def test_com_credencial_passa(cliente_com_senha) -> None:
+    r = cliente_com_senha.get("/api/agenda", headers=_basic("admin", "s3nha"))
+    assert r.status_code == 200
+
+
+def test_a_tela_tambem_e_protegida(cliente_com_senha) -> None:
+    assert cliente_com_senha.get("/").status_code == 401
+    assert cliente_com_senha.get("/", headers=_basic("admin", "s3nha")).status_code == 200
+
+
+def test_post_forjado_de_formulario_e_recusado(cliente_com_senha) -> None:
+    """Sem CORS, application/json de outro site não passa; formulário passaria."""
+    r = cliente_com_senha.post(
+        "/api/agenda",
+        data="hora=03:00",
+        headers={"Content-Type": "application/x-www-form-urlencoded", **_basic("admin", "s3nha")},
+    )
+    assert r.status_code == 415
+
+
+def test_post_json_com_credencial_aplica(cliente_com_senha) -> None:
+    r = cliente_com_senha.post(
+        "/api/agenda", json={"hora": "00:00"}, headers=_basic("admin", "s3nha")
+    )
+    assert r.status_code == 200 and r.json()["ok"] is True

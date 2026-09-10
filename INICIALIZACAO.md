@@ -408,13 +408,45 @@ sudo install -m 644 deploy/rag-painel.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now rag-painel
 ```
 
-**Segurança.** O painel altera o crontab e **não tem autenticação**. O padrão é
-escutar só em `127.0.0.1`; para acessar de outra máquina, túnel SSH em vez de
-expor a porta:
+### Acesso pela rede
+
+O painel **altera o crontab**, então a exposição tem trava. Três modos:
+
+| `PANEL_HOST` | `PANEL_PASSWORD` | o que acontece |
+|---|---|---|
+| `127.0.0.1` (padrão) | vazia | sobe sem senha — quem está na máquina já edita o crontab de qualquer jeito |
+| `0.0.0.0` | definida | sobe com autenticação Basic: o navegador pede usuário e senha |
+| `0.0.0.0` | vazia | **recusa subir**, com a explicação no stderr |
+
+A recusa é deliberada, e segue a regra do resto do projeto — escopo vazio aborta
+a extração, `getSpaces()` vazio aborta a rodada: configuração que achataria
+controle de acesso não passa por descuido. Quem quiser mesmo expor sem senha
+assume com `PANEL_ALLOW_INSECURE=1`.
 
 ```bash
-ssh -L 8770:127.0.0.1:8770 joaquimdp@IP-NOVO
+# atendendo a rede da empresa
+PANEL_HOST=0.0.0.0
+PANEL_PORT=8770
+PANEL_USER=wmw-rag
+PANEL_PASSWORD=...            # obrigatória fora do loopback
 ```
+
+```bash
+# ou, sem abrir porta nenhuma, mantendo PANEL_HOST=127.0.0.1
+ssh -L 8770:127.0.0.1:8770 joaquimdp@IP-DA-MAQUINA
+```
+
+Três limites que valem saber:
+
+- **Basic sobre HTTP não é cifra**, é base64. Numa LAN interna isso barra acesso
+  casual, varredura e engano de DNS rebinding; não barra quem farejar o tráfego.
+  Para isso seria TLS, e a decisão de TLS do projeto está no `ACESSO-MCP.md`;
+- **não reaproveite a senha de uma conta que vale mais que o painel.** Usar a
+  mesma do `CONFLUENCE_PASSWORD` faz a credencial do serviço atravessar a rede a
+  cada carregamento da tela: um sniffer ganharia a leitura do Confluence junto,
+  não só o horário das rodadas;
+- **abra a porta 8770 no firewall com a mesma restrição da 8765**, senão o painel
+  fica alcançável de mais lugares que o próprio MCP.
 
 Ele **não dispara rodada** de propósito: um clique que começa um trabalho de
 horas escrevendo no mesmo SQLite do cron merece mais cuidado do que um botão, e
@@ -497,7 +529,8 @@ perguntando. Ao migrar, tire o cron da antiga.
 [ ] search devolve resultado com URL
 [ ] crontab de meia-noite instalado, com flock; logrotate instalado
 [ ] suspend/hibernate mascarados
-[ ] rag-mcp e rag-painel ativos; painel só em loopback; firewall no MCP
+[ ] rag-mcp e rag-painel ativos; painel com senha se estiver fora do loopback
+[ ] firewall restringindo 8765 (MCP) e 8770 (painel) às faixas internas
 [ ] cron REMOVIDO da máquina antiga
 [ ] time avisado do endereço novo — ACESSO-MCP.md
 ```

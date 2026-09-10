@@ -9,24 +9,34 @@ O que ele NÃO faz, de propósito: disparar rodada. Um clique que começa um
 trabalho de horas escrevendo no mesmo SQLite do cron merece mais cuidado do que
 um botão; o `flock` que protege isso está no crontab, não aqui.
 
-Segurança: escreve no crontab do usuário, então o padrão é escutar SÓ em
-127.0.0.1. Para acessar de outra máquina, túnel SSH:
+Segurança: o painel ESCREVE no crontab, então há duas travas.
 
-    ssh -L 8770:127.0.0.1:8770 joaquimdp@10.2.1.132
+  - o padrão é escutar só em 127.0.0.1. Para acessar de outra máquina sem abrir
+    nada, túnel SSH:  ssh -L 8770:127.0.0.1:8770 joaquimdp@10.2.1.132
+  - para atender a rede (PANEL_HOST=0.0.0.0) é OBRIGATÓRIO definir
+    PANEL_PASSWORD. Sem senha na rede o painel se RECUSA a subir, no mesmo
+    espírito do escopo vazio que aborta a extração: uma configuração que
+    achataria o controle de acesso não deve passar por descuido. Quem quiser
+    mesmo expor sem senha assume isso com PANEL_ALLOW_INSECURE=1.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import os
+import secrets
 import time
 from pathlib import Path
 from typing import Any
 
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from config import Config, load_config, setup_logging
@@ -57,6 +67,87 @@ def _index(c: Config) -> KnowledgeIndex:
         c.qdrant_url, c.collection, c.fastembed_cache_dir,
         allow_download=c.allow_model_download, embedding=c.embedding, rerank=c.rerank,
     )
+
+
+# -- exposição na rede e credencial ----------------------------------------
+
+LOOPBACK = ("127.0.0.1", "localhost", "::1", "")
+
+
+def is_loopback(host: str) -> bool:
+    return host.strip() in LOOPBACK
+
+
+def exposure_error(host: str, password: str, allow_insecure: bool) -> str | None:
+    """Diz por que este par (host, senha) não deve subir. None = pode subir.
+
+    A regra segue a do resto do projeto: configuração que achata controle de
+    acesso ABORTA em vez de avisar. Aqui o que está em jogo é um endpoint que
+    reescreve crontab.
+    """
+    if is_loopback(host) or password or allow_insecure:
+        return None
+    return (
+        f"PANEL_HOST={host} atende a rede e PANEL_PASSWORD está vazia. O painel "
+        "altera o crontab: sem senha, quem alcançar a porta muda o horário das "
+        "rodadas. Defina PANEL_PASSWORD no .env, ou use túnel SSH mantendo "
+        "PANEL_HOST=127.0.0.1. Para expor sem senha assumindo o risco: "
+        "PANEL_ALLOW_INSECURE=1."
+    )
+
+
+def credentials_ok(header: str | None, user: str, password: str) -> bool:
+    """Confere um cabeçalho Authorization: Basic.
+
+    Comparação em tempo constante nas duas partes, e nunca revela qual das duas
+    errou.
+    """
+    if not password:
+        return True  # sem senha configurada, o painel é aberto (só em loopback)
+    if not header or not header.lower().startswith("basic "):
+        return False
+    try:
+        cru = base64.b64decode(header.split(None, 1)[1], validate=True).decode("utf-8")
+    except (binascii.Error, IndexError, UnicodeDecodeError):
+        return False
+    recebido_user, _, recebida_senha = cru.partition(":")
+    ok_user = secrets.compare_digest(recebido_user, user)
+    ok_senha = secrets.compare_digest(recebida_senha, password)
+    return ok_user and ok_senha
+
+
+class BasicAuth(BaseHTTPMiddleware):
+    """Autenticação nativa do navegador: sem tela de login para manter.
+
+    Sobre HTTP puro, Basic manda a senha em base64, que não é cifra. Numa LAN
+    interna isso barra acesso casual, varredura e engano de DNS rebinding — não
+    barra quem consegue farejar o tráfego. Para isso seria TLS, e a decisão de
+    TLS deste projeto está registrada no ACESSO-MCP.md.
+    """
+
+    def __init__(self, app: Any, user: str, password: str) -> None:
+        super().__init__(app)
+        self._user = user
+        self._password = password
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        if not credentials_ok(request.headers.get("authorization"), self._user, self._password):
+            return Response(
+                "credencial do painel necessária\n",
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="rag painel", charset="UTF-8"'},
+            )
+        # Escrita só aceita JSON. Formulário de outro site não consegue mandar
+        # application/json sem preflight, e não há CORS aqui: é o que impede um
+        # POST forjado aproveitando a credencial que o navegador já guardou.
+        if request.method == "POST":
+            tipo = request.headers.get("content-type", "").split(";")[0].strip()
+            if tipo != "application/json":
+                return JSONResponse(
+                    {"ok": False, "erro": "escrita exige Content-Type: application/json"},
+                    status_code=415,
+                )
+        return await call_next(request)
 
 
 # -- rotas -----------------------------------------------------------------
@@ -242,7 +333,7 @@ async def salvar_agenda(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "agenda": agenda.as_dict(), "no_ar": bloco})
 
 
-app = Starlette(routes=[
+ROTAS = [
     Route("/", home),
     Route("/api/estado", estado),
     Route("/api/acessos", acessos),
@@ -250,7 +341,17 @@ app = Starlette(routes=[
     Route("/api/logs", ver_logs),
     Route("/api/agenda", ver_agenda),
     Route("/api/agenda", salvar_agenda, methods=["POST"]),
-])
+]
+
+
+def build_app(user: str = "", password: str = "") -> Starlette:
+    meio = [Middleware(BasicAuth, user=user, password=password)] if password else []
+    return Starlette(routes=ROTAS, middleware=meio)
+
+
+# App sem credencial, para uso local e para os testes. O main() reconstrói com
+# a senha do .env quando ela existe.
+app = build_app()
 
 
 def main() -> int:
@@ -258,17 +359,30 @@ def main() -> int:
     cfg()  # carrega o .env cedo, para PANEL_* já estar no ambiente
     host = os.environ.get("PANEL_HOST", "127.0.0.1")
     porta = int(os.environ.get("PANEL_PORT", "8770"))
-    if host not in ("127.0.0.1", "localhost", "::1"):
+    user = os.environ.get("PANEL_USER", "admin")
+    senha = os.environ.get("PANEL_PASSWORD", "")
+    inseguro = os.environ.get("PANEL_ALLOW_INSECURE", "0").strip() in ("1", "true", "sim")
+
+    problema = exposure_error(host, senha, inseguro)
+    if problema:
+        LOG.error("painel não subiu", extra={"motivo": problema})
+        print(f"\n{problema}\n", file=__import__("sys").stderr)
+        return 2
+
+    if not is_loopback(host) and not senha:
         LOG.warning(
-            "painel escutando fora do loopback: ele ALTERA o crontab e não tem "
-            "autenticação — prefira túnel SSH",
+            "painel exposto na rede SEM senha por PANEL_ALLOW_INSECURE",
             extra={"host": host, "porta": porta},
         )
-    LOG.info("painel no ar", extra={"url": f"http://{host}:{porta}/"})
+
+    LOG.info(
+        "painel no ar",
+        extra={"url": f"http://{host}:{porta}/", "autenticacao": bool(senha)},
+    )
 
     import uvicorn
 
-    uvicorn.run(app, host=host, port=porta, log_level="warning")
+    uvicorn.run(build_app(user, senha), host=host, port=porta, log_level="warning")
     return 0
 
 
