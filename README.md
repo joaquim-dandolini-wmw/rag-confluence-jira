@@ -441,7 +441,8 @@ indexer/sync.py                  CLI extract / index / run / reconcile / status
 mcp_server/server.py             quatro ferramentas MCP
 scripts/precache_models.py       pré-cache do BM25 para operação offline
 tests/                           parser, chunking, transporte, escopo, embeddings
-MAQUINA-NOVA.md                  subir em máquina nova e migrar o índice
+INICIALIZACAO.md                 subir do zero: hardware, 1a carga, cron noturno
+MAQUINA-NOVA.md                  migrar store e índice prontos para outra máquina
 ```
 
 ## Fase 2 — busca híbrida (implementada)
@@ -562,5 +563,7 @@ não mais um modelo genérico.
 
 Detalhes de infraestrutura, versões exatas e medições: **[SETUP.md](SETUP.md)**.
 
-Para levantar tudo isso em outra máquina, e passar o store e o índice para lá:
+Para subir o projeto do zero em máquina própria — recomendação de hardware,
+primeira carga e agendamento noturno: **[INICIALIZACAO.md](INICIALIZACAO.md)**.
+Para levar um store e um índice já prontos daqui para lá:
 **[MAQUINA-NOVA.md](MAQUINA-NOVA.md)**.

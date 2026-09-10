@@ -1,13 +1,17 @@
-# MÁQUINA NOVA — subir o sistema do zero e levar o índice
+# MÁQUINA NOVA — levar um índice pronto para outra máquina
 
-Este documento é a **sequência** para ter o rag-confluence-jira funcionando em
-uma máquina que não tem nada. Ele não repete o `SETUP.md`, que registra o *por
-quê* de cada escolha desta máquina e as medições (ROCm, VRAM, batch size, o
-incidente da GPU); quando a decisão importa, ele aponta a seção de lá. E não
-repete o `ACESSO-MCP.md`, que é como o time conecta o cliente depois.
+Este documento é para **migrar**: a máquina de origem já tem store e índice
+carregados, e você quer levá-los para outra sem reextrair o Jira e o Confluence.
 
-Números medidos em **10/09/2026**, na máquina de origem `cachyos-x8664`
-(10.2.1.132). Eles crescem conforme o escopo do Confluence: confira com
+Se a máquina nova vai começar do zero, com índice vazio e carga inicial a fazer,
+o documento é a **[INICIALIZACAO.md](INICIALIZACAO.md)** — que também traz a
+recomendação de hardware e o agendamento noturno. Aqui não se repete a
+instalação: siga a INICIALIZACAO.md §2 e §3 e volte para cá na hora de levar os
+dados. O `SETUP.md` tem o *por quê* de cada escolha da máquina de referência e as
+medições.
+
+Números medidos em **10/09/2026**, na origem `cachyos-x8664` (10.2.1.132). Eles
+crescem com o escopo do Confluence: confira com
 `python -m indexer.sync status` antes de dimensionar a cópia.
 
 ---
@@ -35,111 +39,59 @@ O `.env` carrega `JIRA_PAT` e `CONFLUENCE_PASSWORD` em texto puro. Passe por
 
 ---
 
-## Parte 1 — a máquina nova
+## Parte 1 — o que a migração muda
 
-### 1. Pacotes do sistema
+A instalação é a da `INICIALIZACAO.md` §2. Quatro pontos são específicos de
+migração:
 
-```bash
-sudo pacman -S --needed docker docker-compose git cronie sqlite
-sudo systemctl enable --now docker cronie
-sudo usermod -aG docker $USER      # relogue depois disto
-```
-
-Fora do Arch, troque o gerenciador: o que precisa existir é Docker, cron, git,
-o CLI do sqlite e o `uv`.
-
-**GPU AMD:** siga `SETUP.md` §2 a §4 antes de continuar — ROCm 7.2.4, o wheel
-`torch==2.14.0+rocm7.2` e a verificação de que `gfx1030` está compilado nele.
-Sem GPU, o sistema roda: ponha `EMBED_DEVICE=cpu` no `.env` e conte com **24x
-mais lento** no embed (medido, `SETUP.md` §6).
-
-### 2. O repositório, no mesmo caminho
-
-```bash
-git clone https://github.com/joaquim-dandolini-wmw/rag-confluence-jira.git \
-    ~/Documentos/rag
-cd ~/Documentos/rag
-```
-
-O caminho `/home/joaquimdp/Documentos/rag` está **escrito por extenso** em três
-lugares. Se você mudar o diretório ou o usuário, edite os três, senão o serviço
-sobe quebrado e o cron falha em silêncio:
-
-- `deploy/rag-mcp.service` — `WorkingDirectory`, `ExecStart`, `PYTHONPATH`, `User`;
-- `deploy/crontab.example` — cada linha é autocontida e traz o caminho;
-- `deploy/mcp-stdio.sh`, se for usar o transporte stdio.
-
-### 3. Ambiente Python
-
-```bash
-uv python install 3.12
-uv venv --python 3.12 .venv
-VIRTUAL_ENV=.venv uv pip install -r requirements-dev.txt
-# GPU AMD: o torch ROCm vem depois, ver SETUP.md §4
-```
-
-### 4. O `.env`
+### 1. O `.env` vem da origem, e três coisas nele mudam
 
 ```bash
 scp joaquimdp@10.2.1.132:~/Documentos/rag/.env .env
 ```
 
-Três coisas para revisar **antes** de subir qualquer serviço:
-
-1. **`MCP_ALLOWED_HOSTS`** — hoje traz os IPs da máquina antiga. O SDK valida o
+1. **`MCP_ALLOWED_HOSTS`** traz os IPs da máquina antiga. O SDK valida o
    cabeçalho `Host` e **recusa** o que não estiver na lista, então com o IP novo
-   ausente todo cliente para de conectar. Ou acrescente o IP novo, ou deixe a
+   ausente todo cliente para de conectar. Acrescente o IP novo, ou deixe a
    variável **vazia**, que faz o servidor descobrir o próprio IP no boot;
-2. **caminhos** — `STORE_PATH`, `EMBED_CACHE_DIR`, `RERANK_CACHE_DIR`,
-   `FASTEMBED_CACHE_DIR` são relativos ao repositório e não precisam mudar;
-3. **`CONFLUENCE_SPACES`** — se estiver `auto`, o escopo é o que o usuário de
-   serviço enxerga, e isso muda sem você tocar em arquivo. Rode
-   `python -m indexer.sync scope` (só analisa, não escreve) e confirme que o
-   número de espaços é o esperado antes da primeira extração.
+2. **`CONFLUENCE_SPACES=auto`** significa que o escopo é o que o usuário de
+   serviço enxerga — pode ter mudado desde a última rodada da origem. Rode
+   `python -m indexer.sync scope` (só analisa) antes de qualquer extração;
+3. **caminhos** (`STORE_PATH`, `*_CACHE_DIR`) são relativos ao repositório e não
+   precisam mudar; o que muda é o caminho absoluto dentro de
+   `deploy/rag-mcp.service`, `deploy/crontab.example` e `deploy/mcp-stdio.sh`,
+   se o diretório ou o usuário forem diferentes.
 
-Se não tiver o `.env` de origem, comece do `.env.example`, que documenta cada
-variável.
-
-### 5. Modelos
-
-O runtime é **offline por padrão** (`ALLOW_MODEL_DOWNLOAD=0`) e nunca baixa
-nada sozinho: se o artefato faltar, ele aborta dizendo qual é. Duas opções:
+### 2. Os modelos podem ser copiados em vez de baixados
 
 ```bash
-# a) copiar da máquina antiga — 4,3 GB, o caminho normal
 rsync -a --info=progress2 joaquimdp@10.2.1.132:~/Documentos/rag/models/ models/
-
-# b) baixar, se esta máquina tem internet
-ALLOW_MODEL_DOWNLOAD=1 .venv/bin/python -m scripts.precache_models
 ```
 
-### 6. Qdrant
+São 4,3 GB. A alternativa é o pré-cache com internet
+(`INICIALIZACAO.md` §2), que baixa o mesmo conteúdo.
+
+### 3. O store é cópia de arquivo, e não pode ser copiado quente
+
+O store usa WAL: um `cp` no meio de uma escrita leva metade de uma transação.
+Ou pare o cron da origem, ou use o `.backup`, que é consistente **com o banco
+em uso**:
 
 ```bash
-docker compose up -d
-curl -s http://127.0.0.1:6333/ | head -1
-```
-
-Use o `docker-compose.yml` **do repositório**, que fixa `qdrant/qdrant:v1.19.1`
-e faz bind só em `127.0.0.1` — o índice tem conteúdo interno das duas
-instâncias Atlassian e não deve ficar exposto na rede. Não escreva outro.
-
-### 7. O store e o índice
-
-O SQLite é uma cópia de arquivo. Não copie quente: o store usa WAL, e um
-`cp` no meio de uma escrita leva metade de uma transação. Ou pare o cron da
-máquina antiga, ou use o `.backup`, que é consistente **com o banco em uso**:
-
-```bash
-# na máquina antiga
+# na máquina ANTIGA
 sqlite3 data/documents.sqlite3 ".backup /tmp/store-migracao.sqlite3"
-# na máquina nova
+# na máquina NOVA
 scp joaquimdp@10.2.1.132:/tmp/store-migracao.sqlite3 data/documents.sqlite3
 ```
 
-O Qdrant é a Parte 2.
+### 4. Decida qual máquina manda
 
-### 8. Validação, antes de ligar qualquer automação
+Se as duas ficarem com o cron ligado, as duas extraem em paralelo e os dois
+índices divergem — e o time não tem como saber a qual dos dois MCPs está
+perguntando. Ao migrar, tire o cron da antiga: `crontab -r` ou comente as
+linhas. Depois avise o time do endereço novo (`ACESSO-MCP.md`).
+
+### Validação, antes de ligar qualquer automação
 
 ```bash
 .venv/bin/python -m pytest tests/ -q          # 202 testes, nada toca instância real
@@ -156,31 +108,6 @@ pendentes denso   0
 pontos            confere com a máquina antiga
 pontos c/ denso   igual a "pontos"
 ```
-
-### 9. Serviço, agendamento e a GPU
-
-```bash
-sudo install -m 644 deploy/rag-mcp.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now rag-mcp
-systemctl is-active rag-mcp
-
-sudo install -m 644 -o root -g root deploy/logrotate.rag /etc/logrotate.d/rag
-crontab deploy/crontab.example        # revise os horários antes
-
-# GPU AMD: a placa não pode suspender (SETUP.md §14)
-sudo install -m 644 -o root -g root \
-    deploy/90-amdgpu-no-runtime-pm.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules
-cat /sys/class/drm/card0/device/power/control      # espere "on"
-```
-
-**Decida qual máquina manda.** Se as duas ficarem com o cron ligado, as duas
-extraem em paralelo e os dois índices divergem — e o time não tem como saber a
-qual dos dois MCPs está perguntando. Ao migrar, tire o cron da antiga:
-`crontab -r` ou comente as linhas.
-
-Por último, avise o time: o endereço do MCP mudou. O `ACESSO-MCP.md` tem o
-passo a passo do cliente.
 
 ---
 
@@ -276,9 +203,10 @@ preenchidos, então o incremental olha, conclui "nada pendente" e não faz nada.
 Você fica com `pendentes idx: 0` num índice vazio — o `status` mente e a busca
 não acha nada.
 
-Custo, com os números medidos: o embed roda a **20 fatias/s** aquecido, então
-156 mil pontos são cerca de **2h10 de GPU**. É o caminho lento; o snapshot leva
-o tempo de copiar 887 MB.
+Custo, com o número medido em carga de verdade — 146.712 fatias em 18 min, a
+**135,6 fatias/s**: as 156 mil fatias de hoje levam cerca de **20 min de GPU**,
+mais alguns minutos de chunking. Sem GPU, a 3,7 fatias/s, o mesmo trabalho passa
+de **11 h**. É o caminho lento; o snapshot leva o tempo de copiar 887 MB.
 
 ---
 
@@ -289,7 +217,8 @@ o tempo de copiar 887 MB.
 2. **O IP é DHCP.** Se mudar, todos os clientes param juntos, e o
    `MCP_ALLOWED_HOSTS` fixo torna isso pior. Reserva de DHCP ou IP fixo resolve.
    A máquina também precisa do cabo de rede conectado.
-3. **Caminho absoluto em três arquivos** (§2). Serviço e cron falham em silêncio.
+3. **Caminho absoluto em três arquivos** (Parte 1, item 1). Serviço e cron
+   falham em silêncio.
 4. **`.env` não está no git.** Sem ele nada sobe, e ele é o único lugar com as
    credenciais.
 5. **Os modelos não se baixam sozinhos.** `ALLOW_MODEL_DOWNLOAD=0` é proposital:
@@ -306,10 +235,8 @@ o tempo de copiar 887 MB.
 ## Checklist
 
 ```
-[ ] docker, cron, git, sqlite3, uv instalados; usuário no grupo docker
-[ ] (GPU) ROCm + torch com gfx1030 verificado — SETUP.md §4
+[ ] instalação feita pela INICIALIZACAO.md §2 (docker, cron, uv, .venv, torch)
 [ ] repositório clonado; caminho conferido nos 3 arquivos de deploy
-[ ] .venv criado e dependências instaladas
 [ ] .env copiado; MCP_ALLOWED_HOSTS revisto; sync scope confere o escopo
 [ ] models/ com e5, reranker e fastembed
 [ ] docker compose up -d; Qdrant responde em 127.0.0.1:6333
