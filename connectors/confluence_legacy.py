@@ -15,6 +15,7 @@ precisa ser testável sem instância real.
 
 from __future__ import annotations
 
+import gzip
 import html
 import logging
 import re
@@ -442,8 +443,106 @@ _SESSION_FAULT_MARKERS = ("InvalidSessionException", "session", "token")
 _AUTH_FAULT_MARKERS = ("AuthenticationFailed", "NotPermitted", "Permission")
 
 
-class _TimeoutTransport(xmlrpc.client.Transport):
-    """xmlrpc.client não expõe timeout; sem isso uma chamada travada pendura a rodada."""
+# Referência numérica de caractere, decimal ou hexadecimal: &#233; ou &#xE9;.
+_CHAR_REF_RE = re.compile(rb"&#([Xx][0-9a-fA-F]+|[0-9]+);")
+
+
+def _char_ref_value(token: bytes) -> int | None:
+    try:
+        if token[:1] in (b"x", b"X"):
+            return int(token[1:], 16)
+        return int(token)
+    except ValueError:  # pragma: no cover - o regex já garante os dígitos
+        return None
+
+
+def _is_valid_xml_char(code: int) -> bool:
+    """Faixas permitidas pela produção Char da XML 1.0."""
+    return (
+        code in (0x9, 0xA, 0xD)
+        or 0x20 <= code <= 0xD7FF
+        or 0xE000 <= code <= 0xFFFD
+        or 0x10000 <= code <= 0x10FFFF
+    )
+
+
+@dataclass(frozen=True)
+class CharRefRepair:
+    """O que a faxina fez numa resposta XML-RPC."""
+
+    surrogate_pairs: int = 0
+    dropped: int = 0
+
+    def __bool__(self) -> bool:
+        return bool(self.surrogate_pairs or self.dropped)
+
+
+def repair_char_refs(raw: bytes) -> tuple[bytes, CharRefRepair]:
+    """Conserta referências numéricas que o expat recusa, ANTES do parse.
+
+    O Confluence 4.2.4 serializa emoji como o PAR SURROGATE da UTF-16, uma
+    referência para cada metade: 📝 sai como `&#55357;&#56541;`. Só que
+    surrogate não é caractere válido em XML 1.0, então o expat rejeita a
+    resposta INTEIRA com "reference to invalid character number" e a página
+    nunca é indexada. É determinístico: falha em toda rodada.
+
+    O par é recombinado no code point de verdade em vez de descartado, porque
+    o emoji é conteúdo - nestas páginas ele abre título e item de lista. A
+    substituição é por referência numérica (`&#x1F4DD;`), não pelos bytes do
+    caractere, para não depender do encoding declarado na resposta.
+
+    Referência inválida sem par - surrogate solto, caractere de controle,
+    valor fora do plano Unicode - é removida: não existe caractere para pôr
+    no lugar, e perder um byte de controle é melhor que perder a página.
+
+    Trabalha em bytes, antes de qualquer decodificação. É seguro: referência
+    numérica é ASCII puro, e byte de continuação de UTF-8 nunca colide com
+    ela.
+    """
+    matches = list(_CHAR_REF_RE.finditer(raw))
+    if not matches:
+        return raw, CharRefRepair()
+
+    out = bytearray()
+    cursor = 0
+    pairs = dropped = 0
+    index = 0
+    while index < len(matches):
+        match = matches[index]
+        code = _char_ref_value(match.group(1))
+        if code is None or _is_valid_xml_char(code):
+            index += 1
+            continue
+
+        out += raw[cursor : match.start()]
+        seguinte = matches[index + 1] if index + 1 < len(matches) else None
+        if 0xD800 <= code <= 0xDBFF and seguinte is not None and seguinte.start() == match.end():
+            baixo = _char_ref_value(seguinte.group(1))
+            if baixo is not None and 0xDC00 <= baixo <= 0xDFFF:
+                code_point = 0x10000 + (code - 0xD800) * 0x400 + (baixo - 0xDC00)
+                out += b"&#x%X;" % code_point
+                cursor = seguinte.end()
+                pairs += 1
+                index += 2
+                continue
+
+        cursor = match.end()
+        dropped += 1
+        index += 1
+
+    out += raw[cursor:]
+    return bytes(out), CharRefRepair(surrogate_pairs=pairs, dropped=dropped)
+
+
+class _RobustTransportMixin:
+    """Duas correções que o xmlrpc.client não oferece.
+
+    1. timeout: a biblioteca não o expõe, e sem ele uma chamada travada
+       pendura a rodada inteira;
+    2. faxina na resposta bruta antes do parse, para as referências de
+       caractere inválidas que o Confluence 4.2.4 emite (ver
+       repair_char_refs).
+    """
 
     def __init__(self, timeout: int, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -454,16 +553,37 @@ class _TimeoutTransport(xmlrpc.client.Transport):
         connection.timeout = self._timeout
         return connection
 
+    def parse_response(self, response: Any) -> Any:
+        # O corpo é lido de uma vez, e não em blocos como faz a implementação
+        # original: uma referência de caractere pode cair na fronteira entre
+        # dois blocos, e aí nenhuma faxina por bloco a enxergaria inteira.
+        raw = response.read()
+        getheader = getattr(response, "getheader", None)
+        if getheader is not None and getheader("Content-Encoding", "") == "gzip":
+            raw = gzip.decompress(raw)
 
-class _TimeoutSafeTransport(xmlrpc.client.SafeTransport):
-    def __init__(self, timeout: int, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self._timeout = timeout
+        raw, repair = repair_char_refs(raw)
+        if repair:
+            LOG.info(
+                "referências de caractere inválidas corrigidas na resposta",
+                extra={
+                    "pares_surrogate": repair.surrogate_pairs,
+                    "removidas": repair.dropped,
+                },
+            )
 
-    def make_connection(self, host: Any) -> Any:
-        connection = super().make_connection(host)
-        connection.timeout = self._timeout
-        return connection
+        parser, unmarshaller = self.getparser()
+        parser.feed(raw)
+        parser.close()
+        return unmarshaller.close()
+
+
+class _RobustTransport(_RobustTransportMixin, xmlrpc.client.Transport):
+    pass
+
+
+class _RobustSafeTransport(_RobustTransportMixin, xmlrpc.client.SafeTransport):
+    pass
 
 
 def _to_iso(value: Any) -> str | None:
@@ -492,11 +612,11 @@ class ConfluenceClient:
             if not cfg.verify_ssl:
                 context.check_hostname = False
                 context.verify_mode = ssl.CERT_NONE
-            transport: xmlrpc.client.Transport = _TimeoutSafeTransport(
+            transport: xmlrpc.client.Transport = _RobustSafeTransport(
                 cfg.timeout, context=context
             )
         else:
-            transport = _TimeoutTransport(cfg.timeout)
+            transport = _RobustTransport(cfg.timeout)
 
         # allow_none=True faria o cliente emitir <nil/>, que o Confluence 4.x
         # rejeita: a chamada inteira falha com fault de parsing.

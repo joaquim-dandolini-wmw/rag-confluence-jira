@@ -274,10 +274,11 @@ Por isso:
 
 ---
 
-## Armadilhas do Confluence 4.2.4 tratadas no parser
+## Armadilhas do Confluence 4.2.4 tratadas no conector
 
-Sete bugs diagnosticados em ambiente real, todos cobertos por teste em
-`tests/test_parser.py`.
+Oito bugs diagnosticados em ambiente real, todos cobertos por teste — as sete
+primeiras em `tests/test_parser.py`, a oitava, que é de transporte, em
+`tests/test_transport.py`.
 
 1. **Fragmento sem elemento raiz.** O storage format são vários irmãos sem raiz
    única; o parser XML para no primeiro nó e a página inteira se perde em
@@ -305,6 +306,16 @@ Sete bugs diagnosticados em ambiente real, todos cobertos por teste em
    descarta pedaços. Falhou, cai para `html.parser`, que é tolerante a erro.
 7. **`allow_none=True` no `ServerProxy`.** O Confluence 4.x não aceita `<nil/>`
    e a chamada falha. Fica desligado.
+8. **Emoji como par surrogate na referência de caractere.** O Confluence
+   serializa emoji como o par surrogate da UTF-16, uma referência numérica para
+   cada metade — 📝 sai como `&#55357;&#56541;`. Surrogate não é caractere
+   válido em XML 1.0, então o expat rejeita a **resposta inteira** e a página
+   nunca chega ao parser: `reference to invalid character number`. Falha em toda
+   rodada, sempre nas mesmas páginas — foram cinco de 10.822 aqui, permanentemente
+   fora do índice. O transporte faz a faxina na resposta bruta **antes** do
+   parse: o par é recombinado no code point de verdade, porque o emoji é
+   conteúdo (nessas páginas ele abre título e item de lista), e referência
+   inválida sem par — surrogate solto, caractere de controle — é removida.
 
 Além disso, wiki markup residual pré-4.0 nunca migrado (`h2. Título`,
 `{code}`, `{noformat}`, macro `unmigrated-wiki-markup`) é convertido num passe
@@ -390,12 +401,15 @@ os post-mortems.
 .venv/bin/python -m pytest tests/ -q
 ```
 
-72 testes, nenhum depende de instância real. Cobrem, no parser: HTML mal
+202 testes, nenhum depende de instância real. Cobrem, no parser: HTML mal
 formado com tag não fechada, entidades acentuadas, wiki markup residual,
 tabela sem `tbody`, lista aninhada, página vazia e página só com whitespace,
 bloco de código em CDATA nas duas formas de macro, e link interno
 `ac:link`/`ri:page`. No chunking: parágrafo único gigante, documento curto,
 título sempre prefixado, IDs estáveis entre execuções e fronteira de cabeçalho.
+No transporte: os oito pares surrogate que apareceram nas páginas reais,
+surrogate solto, referência de controle e resposta gzipada. No store: dois
+escritores concorrentes no mesmo SQLite.
 
 ---
 
@@ -426,7 +440,7 @@ indexer/index.py                 Qdrant: schema, BM25 sparse, upsert, search
 indexer/sync.py                  CLI extract / index / run / reconcile / status
 mcp_server/server.py             quatro ferramentas MCP
 scripts/precache_models.py       pré-cache do BM25 para operação offline
-tests/                           parser e chunking
+tests/                           parser, chunking, transporte, escopo, embeddings
 ```
 
 ## Fase 2 — busca híbrida (implementada)
