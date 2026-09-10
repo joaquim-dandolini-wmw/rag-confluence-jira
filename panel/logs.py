@@ -24,6 +24,13 @@ RESUMOS = ("concluída", "concluído", "finalizada", "abortada", "resolvido", "r
 # vermelho junto com os traceback de verdade.
 _PROGRESSO_RE = re.compile(r"\d+%\|| ?\d+(\.\d+)?(it/s|s/it)\]")
 
+# Ruído do runtime ROCm empacotado no wheel do torch: duas linhas no import e
+# mais duas na inicialização do HIP, sempre com este texto exato e nada mais.
+# Está registrado no SETUP.md §12 como não-defeito, com a recomendação de
+# filtrar no log. Casamento EXATO de propósito: qualquer outra mensagem de
+# "No such file or directory" é informação de verdade e continua aparecendo.
+_RUIDO_ROCM = "(null): No such file or directory"
+
 
 def list_files(directory: Path) -> list[dict[str, Any]]:
     if not directory.is_dir():
@@ -55,7 +62,7 @@ def parse(linhas: list[str]) -> list[dict[str, Any]]:
     for linha in linhas:
         if not linha.strip():
             continue
-        if _PROGRESSO_RE.search(linha):
+        if _PROGRESSO_RE.search(linha) or linha.strip() == _RUIDO_ROCM:
             continue
         if linha.lstrip().startswith("{"):
             try:

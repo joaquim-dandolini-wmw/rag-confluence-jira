@@ -41,6 +41,7 @@ from starlette.routing import Route
 
 from config import Config, load_config, setup_logging
 from indexer.index import KnowledgeIndex
+from panel import changes
 from panel import logs as panel_logs
 from panel import schedule as sched
 from store.documents import DocumentStore
@@ -285,6 +286,53 @@ def testar_confluence(request: Request) -> JSONResponse:
     })
 
 
+def ver_mudancas(request: Request) -> JSONResponse:
+    """O que mudou no store, por janela de tempo. Só leitura."""
+    c = cfg()
+    try:
+        limite = int(request.query_params.get("limite", "100"))
+    except ValueError:
+        limite = 100
+    janela = request.query_params.get("janela", "7d")
+    if janela not in changes.JANELAS:
+        janela = "7d"
+    fonte = request.query_params.get("fonte") or None
+    texto = (request.query_params.get("q") or "").strip() or None
+
+    try:
+        conn = changes.connect(c.store_path)
+    except changes.StoreUnavailable as exc:
+        return JSONResponse({"erro": str(exc), "itens": []})
+
+    try:
+        dados: dict[str, Any] = {
+            "resumo": changes.summary(conn),
+            "por_dia": changes.per_day(conn, 14),
+            "itens": changes.recent(
+                conn, limite=limite, fonte=fonte, janela=janela, texto=texto
+            ),
+            "janela": janela,
+            "fonte": fonte,
+        }
+    finally:
+        conn.close()
+
+    # Remoção não aparece no store: a linha simplesmente não existe mais. O que
+    # dá para mostrar é quanto a última rodada removeu, que fica no relatório.
+    try:
+        with DocumentStore(c.store_path) as store:
+            ultima = store.get_state("last_run") or {}
+    except Exception:  # noqa: BLE001
+        ultima = {}
+    remocoes = {
+        etapa: v.get("removidos", 0)
+        for etapa, v in ultima.items()
+        if isinstance(v, dict) and v.get("removidos")
+    }
+    dados["remocoes_na_ultima_rodada"] = remocoes
+    return JSONResponse(dados)
+
+
 def ver_logs(request: Request) -> JSONResponse:
     arquivos = panel_logs.list_files(LOG_DIR)
     nome = request.query_params.get("arquivo") or (arquivos[0]["nome"] if arquivos else "")
@@ -338,6 +386,7 @@ ROTAS = [
     Route("/api/estado", estado),
     Route("/api/acessos", acessos),
     Route("/api/confluence/testar", testar_confluence, methods=["POST"]),
+    Route("/api/mudancas", ver_mudancas),
     Route("/api/logs", ver_logs),
     Route("/api/agenda", ver_agenda),
     Route("/api/agenda", salvar_agenda, methods=["POST"]),

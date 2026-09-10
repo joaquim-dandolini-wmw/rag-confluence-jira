@@ -384,14 +384,37 @@ PYTHONPATH=$PWD .venv/bin/python -m panel.server
 # http://127.0.0.1:8770/
 ```
 
-Quatro telas, na barra lateral:
+Cinco telas, na barra lateral:
 
 - **Visão geral** — documentos por fonte, pontos no índice, pendentes, e o
   relatório da última rodada com as falhas em destaque;
-- **Logs** — cauda do arquivo escolhido, um evento por linha, com filtro de "só
-  resumos e falhas" e atualização a cada 5 s. Traceback aparece em vermelho;
-  barra de progresso de carregamento de modelo é descartada, para não se
-  confundir com erro;
+- **Mudanças** — o que de fato mudou: quantos documentos em 24 h e em 7 dias,
+  um gráfico por dia dos últimos 14, e a lista do mais recente para o mais
+  antigo, com link para a página ou a issue e o que ainda está pendente de
+  índice ou de vetor denso. Filtra por janela, por fonte e por texto (título,
+  espaço, projeto ou id).
+
+  A coluna que sustenta essa tela é o `extracted_at` do store, e ela responde a
+  pergunta porque o `upsert` **sai antes de escrever** quando o hash do conteúdo
+  é igual: uma rodada que passa por 40 mil páginas sem alteração não move uma
+  linha aqui. O que o dado **não** distingue é documento novo de documento
+  alterado — os dois gravam a mesma coluna, e a tela diz "mudou", que é o que
+  ele sustenta. Remoção não aparece na lista (a linha deixou de existir), então
+  o que se mostra é quanto a última rodada removeu, do relatório;
+- **Logs** — cauda do arquivo escolhido, um evento por linha, com filtro por
+  nível, busca por texto, "só resumos e falhas" e atualização a cada 5 s. O que
+  torna isso legível:
+  - **traceback aparece em vermelho** — o arquivo não é só JSON;
+  - **valor de `falhas` maior que zero é pintado**: numa parede de INFO, é o que
+    se procura;
+  - **relatório aninhado abre em árvore.** `rodada finalizada` traz
+    relatório → etapa → métricas, três níveis, que antes saíam como um JSON de
+    uma linha;
+  - **ruído conhecido é descartado**: a barra de progresso do tqdm, que o
+    `splitlines` transforma em centenas de linhas, e o `(null): No such file or
+    directory` do runtime ROCm, registrado no `SETUP.md` §12 como não-defeito. O
+    casamento desse segundo filtro é exato, para que qualquer outro erro de
+    arquivo continue aparecendo;
 - **Acessos** — como o indexador entra nas duas instâncias, sem exibir senha, e
   o botão **Testar acesso agora**, que faz `login` + `getSpaces` ao vivo. Esse
   teste existe porque o login **sozinho não serve**: ele continua passando
@@ -460,7 +483,7 @@ o `flock` que protege isso está no crontab, não no painel.
 sudo install -m 644 deploy/rag-mcp.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now rag-mcp
 
-.venv/bin/python -m pytest tests/ -q     # 228 testes, nada toca instância real
+.venv/bin/python -m pytest tests/ -q     # 248 testes, nada toca instância real
 PYTHONPATH=$PWD .venv/bin/python -m indexer.sync status
 PYTHONPATH=$PWD .venv/bin/python -m indexer.sync search "abertura de ticket de backup"
 ```

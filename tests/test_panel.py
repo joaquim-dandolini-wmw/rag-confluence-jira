@@ -363,3 +363,151 @@ def test_post_json_com_credencial_aplica(cliente_com_senha) -> None:
         "/api/agenda", json={"hora": "00:00"}, headers=_basic("admin", "s3nha")
     )
     assert r.status_code == 200 and r.json()["ok"] is True
+
+
+def test_ruido_do_rocm_nao_e_evento() -> None:
+    """SETUP.md §12: o wheel do ROCm emite isto no import e não é defeito."""
+    eventos = panel_logs.parse([
+        "(null): No such file or directory",
+        "  (null): No such file or directory  ",
+        '{"ts": "x", "level": "INFO", "msg": "GPU escolhida para o vetor denso"}',
+    ])
+    assert len(eventos) == 1
+    assert eventos[0]["msg"].startswith("GPU escolhida")
+
+
+def test_outro_no_such_file_continua_aparecendo() -> None:
+    """O filtro é casamento exato: erro de arquivo de verdade não pode sumir."""
+    eventos = panel_logs.parse([
+        "FileNotFoundError: [Errno 2] No such file or directory: 'data/documents.sqlite3'",
+    ])
+    assert len(eventos) == 1
+    assert eventos[0]["level"] == "RAW"
+
+
+# --------------------------------------------------------------------------
+# a tela de mudanças
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def store_com_mudancas(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from store.documents import Document, DocumentStore
+
+    caminho = tmp_path / "s.sqlite3"
+    with DocumentStore(caminho) as store:
+        for i in range(3):
+            store.upsert(Document(
+                doc_id=f"confluence:page:{i}", source="confluence", title=f"Página {i}",
+                body_text=f"corpo {i}", url=f"https://c/{i}", space_key="qualidade",
+            ))
+        store.upsert(Document(
+            doc_id="jira:VENDAS-1", source="jira", content_type="issue",
+            title="VENDAS-1: uma issue", body_text="descrição", url="https://j/1",
+            project="VENDAS", status="Aberto",
+        ))
+        store.commit()
+        # envelhece um documento para cair fora da janela de 24 h
+        antigo = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat(timespec="seconds")
+        store._conn.execute(
+            "UPDATE documents SET extracted_at = ? WHERE doc_id = ?",
+            (antigo, "confluence:page:0"),
+        )
+        store.commit()
+    return caminho
+
+
+def test_resumo_conta_por_janela_e_por_fonte(store_com_mudancas) -> None:
+    from panel import changes
+
+    with changes.connect(store_com_mudancas) as conn:
+        r = changes.summary(conn)
+    assert r["documentos"] == 4
+    assert r["janelas"]["24h"]["total"] == 3          # o de 3 dias atrás ficou fora
+    assert r["janelas"]["24h"]["confluence"] == 2
+    assert r["janelas"]["24h"]["jira"] == 1
+    assert r["janelas"]["7d"]["total"] == 4
+    assert r["por_fonte"]["confluence"]["documentos"] == 3
+
+
+def test_recent_ordena_do_mais_novo_e_filtra(store_com_mudancas) -> None:
+    from panel import changes
+
+    with changes.connect(store_com_mudancas) as conn:
+        todos = changes.recent(conn, janela="7d")
+        assert [i["doc_id"] for i in todos][-1] == "confluence:page:0", "o mais antigo por último"
+
+        so_jira = changes.recent(conn, janela="7d", fonte="jira")
+        assert len(so_jira) == 1
+        assert so_jira[0]["onde"] == "VENDAS"
+        assert so_jira[0]["status"] == "Aberto"
+
+        # o filtro de texto cobre título, espaço, projeto e id
+        assert len(changes.recent(conn, janela="7d", texto="qualidade")) == 3
+        assert len(changes.recent(conn, janela="7d", texto="VENDAS")) == 1
+        assert changes.recent(conn, janela="7d", texto="nao-existe") == []
+
+        assert len(changes.recent(conn, janela="24h")) == 3
+        assert len(changes.recent(conn, janela="7d", limite=2)) == 2
+
+
+def test_pendencias_aparecem_como_pendencia(store_com_mudancas) -> None:
+    from panel import changes
+
+    with changes.connect(store_com_mudancas) as conn:
+        item = changes.recent(conn, janela="7d")[0]
+    # nada foi indexado nem embedado neste store de teste
+    assert item["pendente_index"] is True
+    assert item["pendente_denso"] is True
+
+
+def test_por_dia_agrupa_e_ordena_crescente(store_com_mudancas) -> None:
+    from panel import changes
+
+    with changes.connect(store_com_mudancas) as conn:
+        dias = changes.per_day(conn, 14)
+    assert len(dias) == 2
+    assert dias[0]["dia"] < dias[1]["dia"], "do mais antigo para o mais novo"
+    assert sum(d["total"] for d in dias) == 4
+
+
+def test_store_ausente_da_erro_claro(tmp_path) -> None:
+    from panel import changes
+
+    with pytest.raises(changes.StoreUnavailable):
+        changes.connect(tmp_path / "nao-existe.sqlite3")
+
+
+def _aponta_para(monkeypatch, store_path) -> None:
+    """Faz o painel ler o store do teste. O Config é frozen, então é replace."""
+    import dataclasses
+
+    from panel import server
+
+    falso = dataclasses.replace(server.cfg(), store_path=store_path)
+    monkeypatch.setattr(server, "cfg", lambda: falso)
+
+
+def test_endpoint_de_mudancas_responde(cliente, monkeypatch, store_com_mudancas) -> None:
+    client, _, _ = cliente
+    _aponta_para(monkeypatch, store_com_mudancas)
+    d = client.get("/api/mudancas?janela=7d&limite=10").json()
+    assert d["resumo"]["documentos"] == 4
+    assert len(d["itens"]) == 4
+    assert d["janela"] == "7d"
+    assert d["remocoes_na_ultima_rodada"] == {}
+
+
+def test_endpoint_recusa_janela_desconhecida(cliente, monkeypatch, store_com_mudancas) -> None:
+    client, _, _ = cliente
+    _aponta_para(monkeypatch, store_com_mudancas)
+    assert client.get("/api/mudancas?janela=eternidade").json()["janela"] == "7d"
+
+
+def test_endpoint_sem_store_devolve_erro_e_lista_vazia(cliente, monkeypatch, tmp_path) -> None:
+    client, _, _ = cliente
+    _aponta_para(monkeypatch, tmp_path / "nao-existe.sqlite3")
+    d = client.get("/api/mudancas").json()
+    assert d["itens"] == []
+    assert "não encontrado" in d["erro"]

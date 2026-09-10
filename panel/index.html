@@ -99,6 +99,25 @@
   /* Chips adjacentes sem espaço entre si não têm ponto de quebra: por isso
      flex-wrap, e não uma sequência de inline. */
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+  /* barras por dia: horizontais, porque 14 rótulos de data cabem melhor assim */
+  .barras { display: grid; gap: 7px; }
+  .barra { display: grid; grid-template-columns: 84px 1fr 108px; gap: 10px; align-items: center; font-size: 12.5px; }
+  .barra .d { color: var(--fraco); }
+  .barra .t { display: flex; height: 16px; border-radius: 4px; overflow: hidden; background: var(--codigo-bg); }
+  .barra .t i { display: block; height: 100%; }
+  .barra .t i.c { background: var(--acento); }
+  .barra .t i.j { background: var(--ok); }
+  .barra .v { text-align: right; color: var(--fraco); }
+  .legenda { display: flex; gap: 14px; font-size: 12px; color: var(--fraco); margin-top: 12px; }
+  .legenda span { display: flex; align-items: center; gap: 5px; }
+  .legenda i { width: 9px; height: 9px; border-radius: 2px; display: block; }
+
+  input[type=search] {
+    font: inherit; padding: 6px 9px; border: 1px solid var(--borda); border-radius: 7px;
+    background: var(--painel); color: var(--texto); min-width: 190px;
+  }
+  .mud td.q { white-space: nowrap; }
   .selo.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--borda)); }
   .selo.erro { color: var(--erro); border-color: color-mix(in srgb, var(--erro) 40%, var(--borda)); }
   .selo.alerta { color: var(--alerta); border-color: color-mix(in srgb, var(--alerta) 40%, var(--borda)); }
@@ -134,6 +153,7 @@
     <div class="marca"><b>rag</b><span>Jira + Confluence</span></div>
     <nav id="nav">
       <button data-v="geral" aria-current="true"><i class="pt"></i>Visão geral</button>
+      <button data-v="mudancas"><i class="pt"></i>Mudanças</button>
       <button data-v="logs"><i class="pt"></i>Logs</button>
       <button data-v="acessos"><i class="pt"></i>Acessos</button>
       <button data-v="agenda"><i class="pt"></i>Agenda</button>
@@ -160,6 +180,44 @@
       </div>
     </section>
 
+    <!-- ============ MUDANÇAS ============ -->
+    <section id="v-mudancas" hidden>
+      <h1>Mudanças</h1>
+      <p class="sub">Um documento aparece aqui quando o conteúdo dele mudou, ou quando entrou.
+        Rodada que passa por 40 mil páginas sem alteração não move nada nesta tela.</p>
+      <div class="cartoes" id="mud-cartoes"></div>
+      <div class="bloco">
+        <header><h2>Por dia</h2><span class="selo">últimos 14 dias</span></header>
+        <div class="corpo">
+          <div class="barras" id="mud-dias"></div>
+          <div class="legenda">
+            <span><i style="background:var(--acento)"></i>Confluence</span>
+            <span><i style="background:var(--ok)"></i>Jira</span>
+          </div>
+        </div>
+      </div>
+      <div class="bloco">
+        <header>
+          <div class="barra-log">
+            <select id="mud-janela">
+              <option value="24h">últimas 24 h</option>
+              <option value="7d" selected>últimos 7 dias</option>
+              <option value="30d">últimos 30 dias</option>
+              <option value="tudo">tudo</option>
+            </select>
+            <select id="mud-fonte">
+              <option value="">as duas fontes</option>
+              <option value="confluence">Confluence</option>
+              <option value="jira">Jira</option>
+            </select>
+            <input type="search" id="mud-busca" placeholder="título, espaço, projeto ou id">
+          </div>
+          <button class="acao sec" id="mud-agora">Atualizar</button>
+        </header>
+        <div class="corpo" id="mud-lista"><div class="vazio">carregando…</div></div>
+      </div>
+    </section>
+
     <!-- ============ LOGS ============ -->
     <section id="v-logs" hidden>
       <h1>Logs</h1>
@@ -174,6 +232,11 @@
               <option value="500">500 linhas</option>
               <option value="1000">1000 linhas</option>
             </select>
+            <select id="log-nivel">
+              <option value="">todos os níveis</option>
+              <option value="ruim">só avisos e erros</option>
+            </select>
+            <input type="search" id="log-busca" placeholder="filtrar por texto">
             <label class="caixa"><input type="checkbox" id="log-resumo"> só resumos e falhas</label>
             <label class="caixa"><input type="checkbox" id="log-auto" checked> atualizar a cada 5 s</label>
           </div>
@@ -255,7 +318,7 @@ const $ = (s) => document.querySelector(s);
 const num = (n) => (n === null || n === undefined) ? "—" : n.toLocaleString("pt-BR");
 const esc = (s) => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
-const VISTAS = ["geral", "logs", "acessos", "agenda"];
+const VISTAS = ["geral", "mudancas", "logs", "acessos", "agenda"];
 let vista = "geral", timerLog = null;
 
 /* ---------- navegação, por hash: cada aba tem URL e sobrevive ao recarregar ---------- */
@@ -266,6 +329,7 @@ function irPara(nome) {
   document.querySelectorAll("main > section").forEach(s => s.hidden = s.id !== "v-" + vista);
   if (vista === "logs") { carregarLogs(); ligarAuto(); } else { pararAuto(); }
   if (vista === "geral") carregarEstado();
+  if (vista === "mudancas") carregarMudancas();
   if (vista === "acessos") carregarAcessos();
   if (vista === "agenda") carregarAgenda();
 }
@@ -325,7 +389,94 @@ async function carregarEstado() {
   }
 }
 
+/* ---------- mudanças ---------- */
+const horaLocal = (iso) => {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+};
+
+async function carregarMudancas() {
+  const janela = $("#mud-janela").value, fonte = $("#mud-fonte").value, q = $("#mud-busca").value.trim();
+  const d = await (await fetch(
+    `/api/mudancas?janela=${janela}&fonte=${encodeURIComponent(fonte)}&q=${encodeURIComponent(q)}&limite=200`)).json();
+
+  if (d.erro) { $("#mud-lista").innerHTML = `<div class="vazio">${esc(d.erro)}</div>`; return; }
+
+  const j = d.resumo.janelas, rem = d.remocoes_na_ultima_rodada || {};
+  const cartao = (rot, val, det) => `<div class="cartao"><div class="rot">${rot}</div><div class="val">${val}</div><div class="det">${det || ""}</div></div>`;
+  const parte = (o) => `confluence ${num(o.confluence)} · jira ${num(o.jira)}`;
+  const removidos = Object.values(rem).reduce((a, v) => a + v, 0);
+  $("#mud-cartoes").innerHTML =
+      cartao("mudaram em 24 h", num(j["24h"].total), parte(j["24h"]))
+    + cartao("em 7 dias", num(j["7d"].total), parte(j["7d"]))
+    + cartao("no store", num(d.resumo.documentos), "total indexável")
+    + cartao("removidos na última rodada", num(removidos),
+             removidos ? Object.entries(rem).map(([k, v]) => `${k} ${num(v)}`).join(" · ")
+                       : "nenhuma remoção");
+
+  const dias = d.por_dia || [];
+  const teto = Math.max(1, ...dias.map(x => x.total));
+  $("#mud-dias").innerHTML = dias.length ? dias.map(x => {
+    const pc = (n) => (n / teto * 100).toFixed(1);
+    return `<div class="barra"><span class="d mono">${esc(x.dia.slice(5))}</span>`
+         + `<span class="t"><i class="c" style="width:${pc(x.confluence)}%"></i>`
+         + `<i class="j" style="width:${pc(x.jira)}%"></i></span>`
+         + `<span class="v mono">${num(x.total)}</span></div>`;
+  }).join("") : '<div class="vazio">nada nos últimos 14 dias</div>';
+
+  const itens = d.itens || [];
+  $("#mud-lista").innerHTML = itens.length ? `<table class="mud">
+      <tr><th>quando</th><th>fonte</th><th>onde</th><th>documento</th><th>pendências</th></tr>
+      ${itens.map(i => {
+        const pend = [i.pendente_index ? "índice" : "", i.pendente_denso ? "denso" : ""].filter(Boolean);
+        return `<tr>
+          <td class="q mono">${esc(horaLocal(i.mudou_em))}</td>
+          <td class="q">${esc(i.fonte)}<span class="det" style="color:var(--fraco)"> ${esc(i.tipo || "")}</span></td>
+          <td class="q mono" style="font-size:12px">${esc(i.onde)}</td>
+          <td><a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.titulo)}</a>
+              ${i.status ? `<span class="selo" style="margin-left:6px">${esc(i.status)}</span>` : ""}</td>
+          <td class="q">${pend.length ? `<span class="selo alerta">${pend.join(" + ")}</span>` : '<span class="selo ok">no índice</span>'}</td>
+        </tr>`;
+      }).join("")}</table>`
+    : '<div class="vazio">nada mudou nesta janela</div>';
+}
+$("#mud-agora").onclick = carregarMudancas;
+$("#mud-janela").onchange = carregarMudancas;
+$("#mud-fonte").onchange = carregarMudancas;
+let tBusca = null;
+$("#mud-busca").oninput = () => { clearTimeout(tBusca); tBusca = setTimeout(carregarMudancas, 350); };
+
 /* ---------- logs ---------- */
+/* Um valor com "falha" ou "erro" no nome e maior que zero é pintado: numa
+   parede de INFO, é o que se procura. */
+const RUIM_RE = /falha|erro|indispon|truncad/i;
+function fmtValor(k, v) {
+  const n = typeof v === "number";
+  const ruim = n && v > 0 && RUIM_RE.test(k);
+  const txt = esc(n ? num(v) : (v === null ? "—" : v));
+  return `<b>${esc(k)}</b> ${ruim ? `<span style="color:var(--erro);font-weight:650">${txt}</span>` : txt}`;
+}
+/* Recursivo porque "rodada finalizada" traz relatorio > etapa > métricas, três
+   níveis. Antes isso saía como um JSON de uma linha, ilegível. */
+function fmtExtra(obj, nivel = 0) {
+  const planos = [], filhos = [];
+  for (const [k, v] of Object.entries(obj || {})) {
+    if (v && typeof v === "object" && !Array.isArray(v)) filhos.push([k, v]);
+    else planos.push(fmtValor(k, Array.isArray(v) ? v.join(", ") : v));
+  }
+  let html = "";
+  const pad = nivel * 14;
+  if (planos.length) html += `<div class="x" style="padding-left:${pad}px">${planos.join(" · ")}</div>`;
+  for (const [k, v] of filhos) {
+    html += `<div class="x" style="padding-left:${pad}px;color:var(--texto)"><b>${esc(k)}</b></div>`
+          + fmtExtra(v, nivel + 1);
+  }
+  return html;
+}
+
+let eventosCarregados = [];
+
 async function carregarLogs() {
   const arq = $("#log-arquivo").value, lim = $("#log-limite").value, res = $("#log-resumo").checked ? "1" : "0";
   const d = await (await fetch(`/api/logs?arquivo=${encodeURIComponent(arq)}&limite=${lim}&resumo=${res}`)).json();
@@ -336,20 +487,35 @@ async function carregarLogs() {
       `<option value="${esc(a.nome)}">${esc(a.nome)} · ${(a.bytes / 1024).toFixed(0)} KB</option>`).join("");
     if (d.arquivo) sel.value = d.arquivo;
   }
+  eventosCarregados = d.eventos || [];
+  pintarLogs();
+}
+
+function pintarLogs() {
+  const nivel = $("#log-nivel").value, busca = $("#log-busca").value.trim().toLowerCase();
+  let eventos = eventosCarregados;
+  if (nivel === "ruim") eventos = eventos.filter(e => e.level !== "INFO" && e.level !== "DEBUG");
+  if (busca) eventos = eventos.filter(e =>
+    (e.msg || "").toLowerCase().includes(busca) ||
+    JSON.stringify(e.extra || {}).toLowerCase().includes(busca));
 
   const cx = $("#log");
-  if (!(d.eventos || []).length) { cx.innerHTML = '<div class="vazio">nada aqui</div>'; return; }
+  if (!eventos.length) {
+    cx.innerHTML = `<div class="vazio">${eventosCarregados.length ? "nenhum evento com esse filtro" : "nada aqui"}</div>`;
+    return;
+  }
   const perto = cx.scrollTop + cx.clientHeight >= cx.scrollHeight - 40;
-  cx.innerHTML = d.eventos.map(e => {
+  cx.innerHTML = eventos.map(e => {
     if (e.level === "RAW") return `<div class="ev RAW mono">${esc(e.msg)}</div>`;
-    const extra = Object.entries(e.extra || {}).map(([k, v]) =>
-      `<b>${esc(k)}</b> ${esc(typeof v === "object" ? JSON.stringify(v) : v)}`).join(" · ");
     return `<div class="ev ${esc(e.level)}"><span class="h mono">${esc((e.ts || "").slice(11, 19))}</span>`
          + `<span class="n">${esc(e.level)}</span><span class="m">${esc(e.msg)}`
-         + (extra ? `<div class="x" style="font-size:12px">${extra}</div>` : "") + "</span></div>";
+         + fmtExtra(e.extra) + "</span></div>";
   }).join("");
   if (perto) cx.scrollTop = cx.scrollHeight;
 }
+$("#log-nivel").onchange = pintarLogs;
+let tLog = null;
+$("#log-busca").oninput = () => { clearTimeout(tLog); tLog = setTimeout(pintarLogs, 200); };
 function ligarAuto() { pararAuto(); if ($("#log-auto").checked) timerLog = setInterval(carregarLogs, 5000); }
 function pararAuto() { if (timerLog) clearInterval(timerLog), timerLog = null; }
 $("#log-agora").onclick = carregarLogs;

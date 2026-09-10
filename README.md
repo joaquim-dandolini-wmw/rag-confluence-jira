@@ -401,7 +401,7 @@ os post-mortems.
 .venv/bin/python -m pytest tests/ -q
 ```
 
-238 testes, nenhum depende de instância real. Cobrem, no parser: HTML mal
+248 testes, nenhum depende de instância real. Cobrem, no parser: HTML mal
 formado com tag não fechada, entidades acentuadas, wiki markup residual,
 tabela sem `tbody`, lista aninhada, página vazia e página só com whitespace,
 bloco de código em CDATA nas duas formas de macro, e link interno
@@ -444,7 +444,7 @@ mcp_server/server.py             quatro ferramentas MCP
 scripts/precache_models.py       pré-cache do BM25 para operação offline
 tests/                           parser, chunking, transporte, escopo, painel
 INICIALIZACAO.md                 subir do zero: hardware, migração, cron noturno
-panel/                           painel web: logs, acessos e agenda das rodadas
+panel/                           painel web: mudanças, logs, acessos e agenda
 ```
 
 ## Fase 2 — busca híbrida (implementada)
