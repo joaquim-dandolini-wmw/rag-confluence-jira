@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rag · painel</title>
+<style>
+  :root {
+    --bg: #f6f7f9;      --painel: #ffffff;   --borda: #e2e5ea;
+    --texto: #1c2024;   --fraco: #6b7280;    --acento: #2563eb;
+    --ok: #157f52;      --alerta: #b45309;   --erro: #b91c1c;
+    --codigo-bg: #f2f4f7;
+    --sombra: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;    --painel: #1b1e23;   --borda: #2b3038;
+      --texto: #e6e8eb; --fraco: #9aa2ae;    --acento: #6ea8fe;
+      --ok: #4ade80;    --alerta: #fbbf24;   --erro: #f87171;
+      --codigo-bg: #14171c;
+      --sombra: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--texto);
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  }
+  code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+  .layout { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+
+  /* ---- barra lateral ---- */
+  aside {
+    background: var(--painel); border-right: 1px solid var(--borda);
+    padding: 18px 14px; display: flex; flex-direction: column; gap: 22px;
+  }
+  .marca { display: flex; align-items: baseline; gap: 8px; padding: 0 6px; }
+  .marca b { font-size: 15px; letter-spacing: -.2px; }
+  .marca span { font-size: 11px; color: var(--fraco); }
+  nav { display: flex; flex-direction: column; gap: 2px; }
+  nav button {
+    all: unset; cursor: pointer; padding: 8px 10px; border-radius: 7px;
+    font-size: 13.5px; color: var(--texto); display: flex; align-items: center;
+    gap: 9px; transition: background .12s;
+  }
+  nav button:hover { background: var(--codigo-bg); }
+  nav button[aria-current="true"] { background: color-mix(in srgb, var(--acento) 14%, transparent); color: var(--acento); font-weight: 600; }
+  nav button .pt { width: 7px; height: 7px; border-radius: 50%; background: var(--borda); flex: none; }
+  nav button[aria-current="true"] .pt { background: var(--acento); }
+  .rodape-lateral { margin-top: auto; padding: 0 6px; font-size: 11.5px; color: var(--fraco); }
+  .rodape-lateral div { margin-top: 4px; }
+
+  /* ---- conteúdo ---- */
+  main { padding: 26px 30px 60px; max-width: 1080px; }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.3px; }
+  .sub { color: var(--fraco); margin: 0 0 22px; font-size: 13px; }
+  section[hidden] { display: none; }
+
+  .cartoes { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; margin-bottom: 22px; }
+  .cartao { background: var(--painel); border: 1px solid var(--borda); border-radius: 10px; padding: 13px 15px; box-shadow: var(--sombra); }
+  .cartao .rot { font-size: 11.5px; color: var(--fraco); text-transform: uppercase; letter-spacing: .04em; }
+  .cartao .val { font-size: 23px; font-weight: 650; letter-spacing: -.5px; margin-top: 3px; }
+  .cartao .det { font-size: 12px; color: var(--fraco); margin-top: 2px; }
+
+  .bloco { background: var(--painel); border: 1px solid var(--borda); border-radius: 10px; box-shadow: var(--sombra); margin-bottom: 18px; }
+  .bloco > header { padding: 12px 16px; border-bottom: 1px solid var(--borda); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .bloco > header h2 { font-size: 14px; margin: 0; font-weight: 620; }
+  .bloco > .corpo { padding: 14px 16px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--borda); vertical-align: top; }
+  th { color: var(--fraco); font-weight: 550; font-size: 12px; }
+  tr:last-child td { border-bottom: 0; }
+  td.rot { color: var(--fraco); width: 190px; }
+
+  button.acao {
+    all: unset; cursor: pointer; background: var(--acento); color: #fff;
+    padding: 7px 13px; border-radius: 7px; font-size: 13px; font-weight: 560;
+  }
+  button.acao:hover { filter: brightness(1.07); }
+  button.acao.sec { background: transparent; color: var(--texto); border: 1px solid var(--borda); }
+  button.acao[disabled] { opacity: .55; cursor: progress; }
+
+  label.campo { display: block; font-size: 12.5px; color: var(--fraco); margin-bottom: 5px; }
+  input[type=time], input[type=number], select {
+    font: inherit; padding: 6px 9px; border: 1px solid var(--borda);
+    border-radius: 7px; background: var(--painel); color: var(--texto);
+  }
+  .linha { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-end; }
+  .caixa { display: flex; align-items: center; gap: 7px; font-size: 13.5px; }
+
+  pre.cron {
+    background: var(--codigo-bg); border: 1px solid var(--borda); border-radius: 8px;
+    padding: 11px 13px; font-size: 12px; overflow-x: auto; margin: 0; white-space: pre;
+  }
+
+  .selo { font-size: 11.5px; padding: 2px 8px; border-radius: 20px; border: 1px solid var(--borda); color: var(--fraco); }
+  /* Chips adjacentes sem espaço entre si não têm ponto de quebra: por isso
+     flex-wrap, e não uma sequência de inline. */
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .selo.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--borda)); }
+  .selo.erro { color: var(--erro); border-color: color-mix(in srgb, var(--erro) 40%, var(--borda)); }
+  .selo.alerta { color: var(--alerta); border-color: color-mix(in srgb, var(--alerta) 40%, var(--borda)); }
+
+  /* ---- logs ---- */
+  .barra-log { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  #log { max-height: 62vh; overflow: auto; background: var(--codigo-bg); border-top: 1px solid var(--borda); }
+  .ev { display: grid; grid-template-columns: 74px 62px 1fr; gap: 10px; padding: 4px 14px; font-size: 12.5px; border-bottom: 1px solid color-mix(in srgb, var(--borda) 45%, transparent); }
+  .ev:hover { background: var(--painel); }
+  .ev .h { color: var(--fraco); }
+  .ev .n { font-weight: 620; font-size: 11px; padding-top: 1px; }
+  .ev.INFO .n { color: var(--fraco); }
+  .ev.WARNING .n { color: var(--alerta); }
+  .ev.ERROR .n { color: var(--erro); }
+  .ev.RAW { grid-template-columns: 1fr; color: var(--erro); }
+  .ev .m { word-break: break-word; }
+  .ev .x { color: var(--fraco); }
+  .ev .x b { font-weight: 500; color: var(--texto); }
+  .vazio { padding: 26px 16px; color: var(--fraco); text-align: center; }
+
+  @media (max-width: 760px) {
+    .layout { grid-template-columns: 1fr; }
+    aside { flex-direction: row; align-items: center; gap: 12px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--borda); }
+    nav { flex-direction: row; }
+    .marca, .rodape-lateral { display: none; }
+    main { padding: 18px 16px 50px; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside>
+    <div class="marca"><b>rag</b><span>Jira + Confluence</span></div>
+    <nav id="nav">
+      <button data-v="geral" aria-current="true"><i class="pt"></i>Visão geral</button>
+      <button data-v="logs"><i class="pt"></i>Logs</button>
+      <button data-v="acessos"><i class="pt"></i>Acessos</button>
+      <button data-v="agenda"><i class="pt"></i>Agenda</button>
+    </nav>
+    <div class="rodape-lateral">
+      <div id="rl-repo" class="mono"></div>
+      <div id="rl-hora"></div>
+    </div>
+  </aside>
+
+  <main>
+    <!-- ============ VISÃO GERAL ============ -->
+    <section id="v-geral">
+      <h1>Visão geral</h1>
+      <p class="sub">Estado do store, do índice e da última rodada.</p>
+      <div class="cartoes" id="cartoes"></div>
+      <div class="bloco">
+        <header><h2>Última rodada</h2><span id="selo-rodada" class="selo">—</span></header>
+        <div class="corpo" id="rodada"><div class="vazio">carregando…</div></div>
+      </div>
+      <div class="bloco">
+        <header><h2>Modelos e MCP</h2></header>
+        <div class="corpo"><table id="tab-infra"></table></div>
+      </div>
+    </section>
+
+    <!-- ============ LOGS ============ -->
+    <section id="v-logs" hidden>
+      <h1>Logs</h1>
+      <p class="sub">Cauda do arquivo, uma linha por evento. Traceback aparece em vermelho.</p>
+      <div class="bloco">
+        <header>
+          <div class="barra-log">
+            <select id="log-arquivo"></select>
+            <select id="log-limite">
+              <option value="100">100 linhas</option>
+              <option value="200" selected>200 linhas</option>
+              <option value="500">500 linhas</option>
+              <option value="1000">1000 linhas</option>
+            </select>
+            <label class="caixa"><input type="checkbox" id="log-resumo"> só resumos e falhas</label>
+            <label class="caixa"><input type="checkbox" id="log-auto" checked> atualizar a cada 5 s</label>
+          </div>
+          <button class="acao sec" id="log-agora">Atualizar</button>
+        </header>
+        <div id="log"><div class="vazio">carregando…</div></div>
+      </div>
+    </section>
+
+    <!-- ============ ACESSOS ============ -->
+    <section id="v-acessos" hidden>
+      <h1>Acessos</h1>
+      <p class="sub">Como o indexador entra nas duas instâncias. Nenhuma senha é exibida.</p>
+      <div class="bloco">
+        <header>
+          <h2>Confluence 4.2.4</h2>
+          <button class="acao" id="btn-testar">Testar acesso agora</button>
+        </header>
+        <div class="corpo">
+          <table id="tab-conf"></table>
+          <div id="res-teste" style="margin-top:12px"></div>
+        </div>
+      </div>
+      <div class="bloco">
+        <header><h2>Jira 8.14</h2></header>
+        <div class="corpo"><table id="tab-jira"></table></div>
+      </div>
+      <div class="bloco">
+        <header><h2>Espaços no índice</h2><span class="selo" id="selo-espacos">—</span></header>
+        <div class="corpo" id="lista-espacos"></div>
+      </div>
+    </section>
+
+    <!-- ============ AGENDA ============ -->
+    <section id="v-agenda" hidden>
+      <h1>Agenda</h1>
+      <p class="sub">Uma janela por dia. Salvar reescreve <span class="mono">apenas</span> o bloco do painel no crontab do usuário.</p>
+      <div class="bloco">
+        <header><h2>Quando rodar</h2><span class="selo" id="selo-agenda">—</span></header>
+        <div class="corpo">
+          <div class="linha">
+            <div>
+              <label class="campo" for="ag-hora">Horário</label>
+              <input type="time" id="ag-hora" value="00:00" step="60">
+            </div>
+            <div>
+              <label class="campo">Fontes</label>
+              <div class="linha" style="gap:14px">
+                <label class="caixa"><input type="checkbox" id="ag-conf" checked> Confluence</label>
+                <label class="caixa"><input type="checkbox" id="ag-jira" checked> Jira</label>
+              </div>
+            </div>
+          </div>
+          <div class="linha" style="margin-top:16px">
+            <label class="caixa"><input type="checkbox" id="ag-anexos"> contar anexos <span class="selo">+1 chamada por página</span></label>
+            <label class="caixa"><input type="checkbox" id="ag-rec" checked> reconciliar deleções do Jira no domingo</label>
+            <label class="caixa"><input type="checkbox" id="ag-ativo" checked> agendamento ativo</label>
+          </div>
+          <div class="linha" style="margin-top:18px">
+            <button class="acao" id="ag-salvar">Salvar e aplicar no crontab</button>
+            <span id="ag-msg" class="selo" hidden></span>
+          </div>
+        </div>
+      </div>
+      <div class="bloco">
+        <header><h2>O que vai para o crontab</h2></header>
+        <div class="corpo"><pre class="cron" id="ag-previsto">—</pre></div>
+      </div>
+      <div class="bloco">
+        <header><h2>O que está no ar agora</h2></header>
+        <div class="corpo"><pre class="cron" id="ag-noar">—</pre></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const num = (n) => (n === null || n === undefined) ? "—" : n.toLocaleString("pt-BR");
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+const VISTAS = ["geral", "logs", "acessos", "agenda"];
+let vista = "geral", timerLog = null;
+
+/* ---------- navegação, por hash: cada aba tem URL e sobrevive ao recarregar ---------- */
+function irPara(nome) {
+  vista = VISTAS.includes(nome) ? nome : "geral";
+  document.querySelectorAll("#nav button").forEach(b =>
+    b.setAttribute("aria-current", String(b.dataset.v === vista)));
+  document.querySelectorAll("main > section").forEach(s => s.hidden = s.id !== "v-" + vista);
+  if (vista === "logs") { carregarLogs(); ligarAuto(); } else { pararAuto(); }
+  if (vista === "geral") carregarEstado();
+  if (vista === "acessos") carregarAcessos();
+  if (vista === "agenda") carregarAgenda();
+}
+$("#nav").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-v]");
+  if (b) location.hash = b.dataset.v;
+});
+addEventListener("hashchange", () => irPara(location.hash.slice(1)));
+
+/* ---------- visão geral ---------- */
+async function carregarEstado() {
+  let d;
+  try { d = await (await fetch("/api/estado")).json(); }
+  catch { $("#cartoes").innerHTML = '<div class="cartao"><div class="rot">painel</div><div class="val">offline</div></div>'; return; }
+
+  const st = d.store || {}, q = d.qdrant || {};
+  const cartao = (rot, val, det) => `<div class="cartao"><div class="rot">${rot}</div><div class="val">${val}</div><div class="det">${det || ""}</div></div>`;
+  const fontes = Object.entries(st.por_fonte || {}).map(([k, v]) => `${k} ${num(v)}`).join(" · ");
+  const pend = (st.pendentes_index || 0) + (st.pendentes_denso || 0);
+  $("#cartoes").innerHTML =
+      cartao("documentos", num(st.documentos), fontes)
+    + cartao("pontos no índice", num(q.pontos), q.erro ? "Qdrant indisponível" : `com denso ${num(q.pontos_com_denso)}`)
+    + cartao("pendentes", num(pend), `índice ${num(st.pendentes_index)} · denso ${num(st.pendentes_denso)}`)
+    + cartao("espaços versionados", num(st.versoes_confluence), `cursor Jira ${st.cursor_jira ? esc(st.cursor_jira).slice(0, 16) : "—"}`);
+
+  const r = d.ultima_rodada;
+  const selo = $("#selo-rodada");
+  if (!r) { $("#rodada").innerHTML = '<div class="vazio">nenhuma rodada registrada</div>'; selo.textContent = "—"; selo.className = "selo"; }
+  else {
+    const falhas = Object.values(r).reduce((a, v) => a + ((v && typeof v === "object" && v.falhas) || 0), 0);
+    selo.textContent = falhas ? `${falhas} falha(s)` : "sem falhas";
+    selo.className = "selo " + (falhas ? "erro" : "ok");
+    let html = "<table>";
+    if (r.em) html += `<tr><td class="rot">quando</td><td class="mono">${esc(r.em)}</td></tr>`;
+    for (const [etapa, v] of Object.entries(r)) {
+      if (etapa === "em" || !v || typeof v !== "object") continue;
+      const campos = Object.entries(v).map(([k, val]) =>
+        `<b>${esc(k)}</b> ${esc(typeof val === "number" ? num(val) : val)}`).join(" · ");
+      html += `<tr><td class="rot">${esc(etapa)}</td><td class="x" style="font-size:12.5px">${campos}</td></tr>`;
+    }
+    $("#rodada").innerHTML = html + "</table>";
+  }
+
+  const m = d.modelos || {}, mcp = d.mcp || {};
+  $("#tab-infra").innerHTML = `
+    <tr><td class="rot">embed</td><td class="mono">${esc(m.embed || "—")} · device ${esc(m.embed_device || "—")} · batch ${num(m.embed_batch)}</td></tr>
+    <tr><td class="rot">reranker</td><td class="mono">${m.rerank ? esc(m.rerank) + " · " + num(m.rerank_candidatos) + " candidatos" : "desligado"}</td></tr>
+    <tr><td class="rot">qdrant</td><td class="mono">${esc(q.url || "—")} ${q.versao ? "v" + esc(q.versao) : ""} ${q.erro ? '<span class="selo erro">' + esc(q.erro) + "</span>" : ""}</td></tr>
+    <tr><td class="rot">coleção</td><td class="mono">${esc(q.colecao || "—")}</td></tr>
+    <tr><td class="rot">mcp</td><td class="mono">${esc(mcp.transporte || "—")} · ${esc(mcp.host || "")}:${esc(mcp.porta || "")}${esc(mcp.caminho || "")} · TLS ${mcp.tls ? "sim" : "não"}</td></tr>
+    <tr><td class="rot">store</td><td class="mono">${esc(st.caminho || "—")}</td></tr>`;
+
+  $("#rl-repo").textContent = d.repo || "";
+  if ((d.erros_de_config || []).length) {
+    $("#cartoes").insertAdjacentHTML("afterbegin",
+      `<div class="cartao" style="grid-column:1/-1"><div class="rot">erros de configuração</div><div class="det" style="color:var(--erro)">${d.erros_de_config.map(esc).join("<br>")}</div></div>`);
+  }
+}
+
+/* ---------- logs ---------- */
+async function carregarLogs() {
+  const arq = $("#log-arquivo").value, lim = $("#log-limite").value, res = $("#log-resumo").checked ? "1" : "0";
+  const d = await (await fetch(`/api/logs?arquivo=${encodeURIComponent(arq)}&limite=${lim}&resumo=${res}`)).json();
+
+  const sel = $("#log-arquivo");
+  if (sel.options.length !== (d.arquivos || []).length) {
+    sel.innerHTML = (d.arquivos || []).map(a =>
+      `<option value="${esc(a.nome)}">${esc(a.nome)} · ${(a.bytes / 1024).toFixed(0)} KB</option>`).join("");
+    if (d.arquivo) sel.value = d.arquivo;
+  }
+
+  const cx = $("#log");
+  if (!(d.eventos || []).length) { cx.innerHTML = '<div class="vazio">nada aqui</div>'; return; }
+  const perto = cx.scrollTop + cx.clientHeight >= cx.scrollHeight - 40;
+  cx.innerHTML = d.eventos.map(e => {
+    if (e.level === "RAW") return `<div class="ev RAW mono">${esc(e.msg)}</div>`;
+    const extra = Object.entries(e.extra || {}).map(([k, v]) =>
+      `<b>${esc(k)}</b> ${esc(typeof v === "object" ? JSON.stringify(v) : v)}`).join(" · ");
+    return `<div class="ev ${esc(e.level)}"><span class="h mono">${esc((e.ts || "").slice(11, 19))}</span>`
+         + `<span class="n">${esc(e.level)}</span><span class="m">${esc(e.msg)}`
+         + (extra ? `<div class="x" style="font-size:12px">${extra}</div>` : "") + "</span></div>";
+  }).join("");
+  if (perto) cx.scrollTop = cx.scrollHeight;
+}
+function ligarAuto() { pararAuto(); if ($("#log-auto").checked) timerLog = setInterval(carregarLogs, 5000); }
+function pararAuto() { if (timerLog) clearInterval(timerLog), timerLog = null; }
+$("#log-agora").onclick = carregarLogs;
+$("#log-arquivo").onchange = carregarLogs;
+$("#log-limite").onchange = carregarLogs;
+$("#log-resumo").onchange = carregarLogs;
+$("#log-auto").onchange = ligarAuto;
+
+/* ---------- acessos ---------- */
+async function carregarAcessos() {
+  const d = await (await fetch("/api/acessos")).json();
+  const c = d.confluence, j = d.jira;
+  $("#tab-conf").innerHTML = !c ? '<tr><td class="rot">estado</td><td>não configurado no .env</td></tr>' : `
+    <tr><td class="rot">url</td><td class="mono">${esc(c.url)}</td></tr>
+    <tr><td class="rot">endpoint XML-RPC</td><td class="mono">${esc(c.endpoint)}</td></tr>
+    <tr><td class="rot">usuário</td><td class="mono">${esc(c.usuario)} <span class="selo ${c.senha_definida ? "ok" : "erro"}">senha ${c.senha_definida ? "definida" : "ausente"}</span></td></tr>
+    <tr><td class="rot">escopo</td><td>${esc(c.escopo)}${c.espacos.length ? ' <span class="mono">' + c.espacos.map(esc).join(", ") + "</span>" : ""}</td></tr>
+    <tr><td class="rot">excluídos</td><td class="mono">${c.excluidos.length ? c.excluidos.map(esc).join(", ") : "—"}</td></tr>
+    <tr><td class="rot">timeout · SSL</td><td>${num(c.timeout)} s · verify ${c.verify_ssl ? "sim" : "não"}</td></tr>`;
+  $("#tab-jira").innerHTML = !j ? '<tr><td class="rot">estado</td><td>não configurado no .env</td></tr>' : `
+    <tr><td class="rot">url</td><td class="mono">${esc(j.url)}</td></tr>
+    <tr><td class="rot">token</td><td><span class="selo ${j.pat_definido ? "ok" : "erro"}">PAT ${j.pat_definido ? "definido" : "ausente"}</span></td></tr>
+    <tr><td class="rot">projetos</td><td class="mono">${j.projetos.map(esc).join(", ") || "—"}</td></tr>
+    <tr><td class="rot">timeout · página</td><td>${num(j.timeout)} s · ${num(j.page_size)} por requisição</td></tr>`;
+
+  const esp = d.espacos_no_store || [];
+  $("#selo-espacos").textContent = esp.length + " espaços";
+  $("#lista-espacos").innerHTML = esp.length
+    ? '<div class="chips mono" style="font-size:12.5px">' + esp.map(e =>
+        `<span class="selo">${esc(e)}</span>`).join("") + "</div>"
+    : '<div class="vazio">nenhum espaço indexado</div>';
+}
+
+$("#btn-testar").onclick = async () => {
+  const b = $("#btn-testar"), alvo = $("#res-teste");
+  b.disabled = true; b.textContent = "testando…";
+  alvo.innerHTML = '<span class="selo">login + getSpaces ao vivo…</span>';
+  try {
+    const r = await (await fetch("/api/confluence/testar", { method: "POST" })).json();
+    alvo.innerHTML = r.ok
+      ? `<span class="selo ok">acesso ok em ${num(r.ms)} ms</span>
+         <table style="margin-top:10px">
+           <tr><td class="rot">espaços visíveis</td><td><b>${num(r.espacos_visiveis)}</b>${r.pessoais ? " · " + num(r.pessoais) + " pessoais (~)" : ""}</td></tr>
+           <tr><td class="rot">amostra</td><td class="mono">${r.amostra.map(esc).join(", ")}…</td></tr>
+         </table>`
+      : `<span class="selo erro">falhou em ${esc(r.etapa || "chamada")}</span>
+         <pre class="cron" style="margin-top:10px;color:var(--erro)">${esc(r.erro)}</pre>
+         <div class="det" style="color:var(--fraco);font-size:12.5px;margin-top:8px">
+           "User does not have Use Confluence permission" é permissão GLOBAL, por grupo,
+           em Administração → Permissões Globais. O login pode continuar passando sem ela.
+         </div>`;
+  } catch (e) { alvo.innerHTML = `<span class="selo erro">${esc(e)}</span>`; }
+  b.disabled = false; b.textContent = "Testar acesso agora";
+};
+
+/* ---------- agenda ---------- */
+async function carregarAgenda() {
+  const d = await (await fetch("/api/agenda")).json();
+  const a = d.agenda;
+  $("#ag-hora").value = a.hora;
+  $("#ag-conf").checked = a.fontes.includes("confluence");
+  $("#ag-jira").checked = a.fontes.includes("jira");
+  $("#ag-anexos").checked = a.contar_anexos;
+  $("#ag-rec").checked = a.reconcile_domingo;
+  $("#ag-ativo").checked = a.ativo;
+  $("#ag-previsto").textContent = d.previsto;
+  $("#ag-noar").textContent = d.no_ar || "(o crontab não tem bloco do painel)";
+  const s = $("#selo-agenda");
+  s.textContent = d.crontab_tem_bloco ? (a.ativo ? "no ar às " + a.hora : "bloco presente, desativado") : "não aplicado";
+  s.className = "selo " + (d.crontab_tem_bloco && a.ativo ? "ok" : "alerta");
+}
+
+function agendaDoFormulario() {
+  const fontes = [];
+  if ($("#ag-conf").checked) fontes.push("confluence");
+  if ($("#ag-jira").checked) fontes.push("jira");
+  return {
+    hora: $("#ag-hora").value, fontes,
+    contar_anexos: $("#ag-anexos").checked,
+    reconcile_domingo: $("#ag-rec").checked,
+    ativo: $("#ag-ativo").checked,
+  };
+}
+
+$("#ag-salvar").onclick = async () => {
+  const b = $("#ag-salvar"), msg = $("#ag-msg");
+  b.disabled = true; msg.hidden = false; msg.textContent = "aplicando…"; msg.className = "selo";
+  try {
+    const r = await fetch("/api/agenda", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(agendaDoFormulario()),
+    });
+    const d = await r.json();
+    if (d.ok) { msg.textContent = "aplicado no crontab"; msg.className = "selo ok"; await carregarAgenda(); }
+    else { msg.textContent = d.erro; msg.className = "selo erro"; }
+  } catch (e) { msg.textContent = String(e); msg.className = "selo erro"; }
+  b.disabled = false;
+};
+
+/* ---------- início ---------- */
+setInterval(() => { $("#rl-hora").textContent = new Date().toLocaleTimeString("pt-BR"); }, 1000);
+setInterval(() => { if (vista === "geral") carregarEstado(); }, 15000);
+irPara(location.hash.slice(1));
+</script>
+</body>
+</html>

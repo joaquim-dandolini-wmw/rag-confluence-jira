@@ -1,0 +1,33 @@
+# Painel web de operacao: logs, acessos e a agenda das rodadas.
+#
+# Instalar:
+#   sudo install -m 644 deploy/rag-painel.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rag-painel
+#
+# O painel ESCREVE no crontab do usuario e nao tem autenticacao. Por isso o
+# padrao do PANEL_HOST e 127.0.0.1: para acessar de outra maquina, tunel SSH
+#
+#   ssh -L 8770:127.0.0.1:8770 joaquimdp@10.2.1.132
+#
+# Roda como joaquimdp porque e o crontab DELE que o painel gerencia; como root
+# ele editaria o crontab errado.
+[Unit]
+Description=Painel de operacao do rag-confluence-jira
+Documentation=file:///home/joaquimdp/Documentos/rag/INICIALIZACAO.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=joaquimdp
+Group=joaquimdp
+WorkingDirectory=/home/joaquimdp/Documentos/rag
+Environment=PYTHONPATH=/home/joaquimdp/Documentos/rag
+ExecStart=/home/joaquimdp/Documentos/rag/.venv/bin/python -m panel.server
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

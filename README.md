@@ -401,7 +401,7 @@ os post-mortems.
 .venv/bin/python -m pytest tests/ -q
 ```
 
-202 testes, nenhum depende de instância real. Cobrem, no parser: HTML mal
+228 testes, nenhum depende de instância real. Cobrem, no parser: HTML mal
 formado com tag não fechada, entidades acentuadas, wiki markup residual,
 tabela sem `tbody`, lista aninhada, página vazia e página só com whitespace,
 bloco de código em CDATA nas duas formas de macro, e link interno
@@ -409,7 +409,9 @@ bloco de código em CDATA nas duas formas de macro, e link interno
 título sempre prefixado, IDs estáveis entre execuções e fronteira de cabeçalho.
 No transporte: os oito pares surrogate que apareceram nas páginas reais,
 surrogate solto, referência de controle e resposta gzipada. No store: dois
-escritores concorrentes no mesmo SQLite.
+escritores concorrentes no mesmo SQLite. No painel: a costura do bloco no
+crontab — que precisa preservar job de terceiro e ser idempotente — e o log com
+traceback e barra de progresso no meio do JSON.
 
 ---
 
@@ -440,9 +442,9 @@ indexer/index.py                 Qdrant: schema, BM25 sparse, upsert, search
 indexer/sync.py                  CLI extract / index / run / reconcile / status
 mcp_server/server.py             quatro ferramentas MCP
 scripts/precache_models.py       pré-cache do BM25 para operação offline
-tests/                           parser, chunking, transporte, escopo, embeddings
-INICIALIZACAO.md                 subir do zero: hardware, 1a carga, cron noturno
-MAQUINA-NOVA.md                  migrar store e índice prontos para outra máquina
+tests/                           parser, chunking, transporte, escopo, painel
+INICIALIZACAO.md                 subir do zero: hardware, migração, cron noturno
+panel/                           painel web: logs, acessos e agenda das rodadas
 ```
 
 ## Fase 2 — busca híbrida (implementada)
@@ -563,7 +565,6 @@ não mais um modelo genérico.
 
 Detalhes de infraestrutura, versões exatas e medições: **[SETUP.md](SETUP.md)**.
 
-Para subir o projeto do zero em máquina própria — recomendação de hardware,
-primeira carga e agendamento noturno: **[INICIALIZACAO.md](INICIALIZACAO.md)**.
-Para levar um store e um índice já prontos daqui para lá:
-**[MAQUINA-NOVA.md](MAQUINA-NOVA.md)**.
+Para subir o projeto do zero em máquina nova — recomendação de hardware
+(inclusive sem GPU), como levar o store e o índice, e o agendamento noturno:
+**[INICIALIZACAO.md](INICIALIZACAO.md)**.
