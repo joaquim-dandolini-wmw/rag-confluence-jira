@@ -156,6 +156,7 @@
       <button data-v="mudancas"><i class="pt"></i>Mudanças</button>
       <button data-v="logs"><i class="pt"></i>Logs</button>
       <button data-v="acessos"><i class="pt"></i>Acessos</button>
+      <button data-v="logins"><i class="pt"></i>Logins</button>
       <button data-v="agenda"><i class="pt"></i>Agenda</button>
     </nav>
     <div class="rodape-lateral">
@@ -270,6 +271,28 @@
       </div>
     </section>
 
+    <!-- ============ LOGINS ============ -->
+    <section id="v-logins" hidden>
+      <h1>Logins</h1>
+      <p class="sub">Quem entrou no MCP. A identidade vem do LDAP da empresa; nenhuma senha passa por aqui.</p>
+      <div class="bloco">
+        <header><h2>Autenticação</h2><span class="selo" id="selo-auth">—</span></header>
+        <div class="corpo"><table id="tab-auth"></table></div>
+      </div>
+      <div class="bloco">
+        <header><h2>Sessões de pé</h2><span class="selo" id="selo-sessoes">—</span></header>
+        <div class="corpo" id="lista-sessoes"></div>
+      </div>
+      <div class="bloco">
+        <header><h2>Últimas tentativas</h2><span class="selo" id="selo-tent">—</span></header>
+        <div class="corpo" id="lista-tent"></div>
+      </div>
+      <div class="bloco">
+        <header><h2>Aplicativos registrados</h2><span class="selo" id="selo-cli">—</span></header>
+        <div class="corpo" id="lista-cli"></div>
+      </div>
+    </section>
+
     <!-- ============ AGENDA ============ -->
     <section id="v-agenda" hidden>
       <h1>Agenda</h1>
@@ -318,7 +341,7 @@ const $ = (s) => document.querySelector(s);
 const num = (n) => (n === null || n === undefined) ? "—" : n.toLocaleString("pt-BR");
 const esc = (s) => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
-const VISTAS = ["geral", "mudancas", "logs", "acessos", "agenda"];
+const VISTAS = ["geral", "mudancas", "logs", "acessos", "logins", "agenda"];
 let vista = "geral", timerLog = null;
 
 /* ---------- navegação, por hash: cada aba tem URL e sobrevive ao recarregar ---------- */
@@ -331,6 +354,7 @@ function irPara(nome) {
   if (vista === "geral") carregarEstado();
   if (vista === "mudancas") carregarMudancas();
   if (vista === "acessos") carregarAcessos();
+  if (vista === "logins") carregarLogins();
   if (vista === "agenda") carregarAgenda();
 }
 $("#nav").addEventListener("click", (e) => {
@@ -572,6 +596,64 @@ $("#btn-testar").onclick = async () => {
 };
 
 /* ---------- agenda ---------- */
+/* ---------- logins ---------- */
+const RESULTADO = {
+  ok:            ["ok",   "entrou"],
+  negado:        ["erro", "recusado"],
+  bloqueado:     ["erro", "travado pelo limite"],
+  indisponivel:  ["erro", "diretório fora"],
+};
+
+async function carregarLogins() {
+  const d = await (await fetch("/api/logins")).json();
+
+  $("#selo-auth").textContent = d.ligada ? "ligada" : "DESLIGADA";
+  $("#selo-auth").className = "selo " + (d.ligada ? "ok" : "erro");
+  $("#tab-auth").innerHTML = `
+    <tr><td class="rot">estado</td><td>${d.ligada
+      ? "exige login: quem chega sem token recebe 401"
+      : "<b>aberta</b> — quem alcançar a porta lê tudo que está indexado"}</td></tr>
+    <tr><td class="rot">endereço público</td><td class="mono">${esc(d.publico || "—")}</td></tr>
+    <tr><td class="rot">diretório</td><td class="mono">${esc(d.diretorio || "—")}</td></tr>
+    <tr><td class="rot">grupo exigido</td><td class="mono">${esc(d.grupo || "—")}</td></tr>`;
+
+  const ses = d.sessoes || [];
+  $("#selo-sessoes").textContent = ses.length + (ses.length === 1 ? " sessão" : " sessões");
+  $("#lista-sessoes").innerHTML = ses.length ? `<table>
+    <tr><th>usuário</th><th>aplicativo</th><th>entrou</th><th>último uso</th></tr>
+    ${ses.map(s => `<tr>
+      <td class="mono">${esc(s.usuario)}</td>
+      <td class="mono" style="font-size:12px">${esc((s.client_id || "").slice(0, 8))}</td>
+      <td>${horaLocal(s.criado_em)}</td>
+      <td>${s.ultimo_uso ? horaLocal(s.ultimo_uso) : "—"}</td></tr>`).join("")}
+    </table>` : '<div class="vazio">ninguém conectado agora</div>';
+
+  const t = d.tentativas || [];
+  const recusas = t.filter(x => x.resultado !== "ok").length;
+  $("#selo-tent").textContent = t.length + " · " + recusas + " recusadas";
+  $("#selo-tent").className = "selo" + (recusas ? " erro" : "");
+  $("#lista-tent").innerHTML = t.length ? `<table>
+    <tr><th>quando</th><th>usuário</th><th>de onde</th><th>resultado</th></tr>
+    ${t.map(x => {
+      const [cls, rot] = RESULTADO[x.resultado] || ["", x.resultado];
+      return `<tr>
+        <td>${horaLocal(x.em)}</td>
+        <td class="mono">${esc(x.usuario)}</td>
+        <td class="mono" style="font-size:12px">${esc(x.ip || "—")}</td>
+        <td><span class="selo ${cls}">${esc(rot)}</span></td></tr>`;
+    }).join("")}</table>` : '<div class="vazio">nenhuma tentativa registrada</div>';
+
+  const cli = d.clientes || [];
+  $("#selo-cli").textContent = cli.length + " registrados";
+  $("#lista-cli").innerHTML = cli.length ? `<table>
+    <tr><th>aplicativo</th><th>id</th><th>registrado em</th></tr>
+    ${cli.map(c => `<tr>
+      <td>${esc(c.nome)}</td>
+      <td class="mono" style="font-size:12px">${esc(c.client_id.slice(0, 8))}</td>
+      <td>${horaLocal(c.criado_em)}</td></tr>`).join("")}
+    </table>` : '<div class="vazio">nenhum aplicativo registrado</div>';
+}
+
 async function carregarAgenda() {
   const d = await (await fetch("/api/agenda")).json();
   const a = d.agenda;

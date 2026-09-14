@@ -49,19 +49,42 @@ def _ip(request: Request) -> str:
 
 def _erro_fatal(mensagem: str) -> HTMLResponse:
     # Sem pedido válido não há para onde redirecionar: qualquer destino aqui
-    # seria escolhido por quem montou a URL. Então a página termina aqui.
-    corpo = pagina.render(campos_ocultos={}, erro=mensagem)
-    corpo = corpo.replace("<form method=\"post\" autocomplete=\"on\">", "<form hidden>")
-    return HTMLResponse(corpo, status_code=400, headers=_sem_cache())
+    # seria escolhido por quem montou a URL. Então a página termina aqui, e sem
+    # formulário — não há o que enviar.
+    nonce = secrets.token_urlsafe(16)
+    corpo = pagina.render(campos_ocultos={}, erro=mensagem, nonce=nonce,
+                          com_formulario=False)
+    return HTMLResponse(corpo, status_code=400, headers=_sem_cache(nonce))
 
 
-def _sem_cache() -> dict[str, str]:
+def _sem_cache(nonce: str) -> dict[str, str]:
+    """Cabeçalhos da tela de login.
+
+    O script do tema e do olho da senha é inline e roda com **nonce**, não com
+    `script-src 'unsafe-inline'`: numa página que recebe senha, permitir
+    qualquer script inline seria transformar qualquer falha de escape em roubo
+    de credencial. O nonce muda a cada resposta, então script injetado não
+    executa.
+
+    O `style-src` continua com 'unsafe-inline' porque o SVG da logo traz um
+    <style> próprio, que não tem como receber nonce — e pôr nonce em style-src
+    faria o CSP ignorar o 'unsafe-inline' e bloquear justamente ele.
+    """
     return {
         "Cache-Control": "no-store, no-cache, must-revalidate, private",
         "Pragma": "no-cache",
         "Referrer-Policy": "no-referrer",
         "X-Frame-Options": "DENY",
-        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": (
+            "default-src 'none'; "
+            f"script-src 'nonce-{nonce}'; "
+            "style-src 'unsafe-inline'; "
+            "img-src data:; "
+            "form-action 'self'; "
+            "base-uri 'none'; "
+            "frame-ancestors 'none'"
+        ),
     }
 
 
@@ -77,12 +100,14 @@ def montar_rotas(provider, cfg, freio: Freio | None = None) -> list[Route]:
             return _erro_fatal(f"Pedido de login inválido ou expirado ({exc}). "
                                "Volte ao aplicativo e tente conectar de novo.")
         nonce = secrets.token_urlsafe(24)
+        nonce_csp = secrets.token_urlsafe(16)
         resposta = HTMLResponse(
             pagina.render(
                 campos_ocultos={"req": bruto, "csrf": nonce},
                 cliente=pedido.get("nome_cliente") or None,
+                nonce=nonce_csp,
             ),
-            headers=_sem_cache(),
+            headers=_sem_cache(nonce_csp),
         )
         # Dupla submissão: o mesmo valor no cookie e no formulário. Impede que
         # um site de terceiro poste este formulário com credencial que ele
@@ -112,12 +137,14 @@ def montar_rotas(provider, cfg, freio: Freio | None = None) -> list[Route]:
         cliente = pedido.get("nome_cliente") or None
 
         def refazer(mensagem: str, status: int = 401) -> Response:
+            nonce_csp = secrets.token_urlsafe(16)
             return HTMLResponse(
                 pagina.render(
                     campos_ocultos={"req": bruto, "csrf": enviado},
                     cliente=cliente, erro=mensagem, usuario=usuario,
+                    nonce=nonce_csp,
                 ),
-                status_code=status, headers=_sem_cache(),
+                status_code=status, headers=_sem_cache(nonce_csp),
             )
 
         veredito = freio.checar(usuario, ip)
@@ -151,7 +178,8 @@ def montar_rotas(provider, cfg, freio: Freio | None = None) -> list[Route]:
         LOG.info("login aceito", extra={"usuario": identidade.uid, "ip": ip,
                                         "client_id": pedido.get("client_id")})
         destino = provider.emitir_codigo(pedido, identidade.uid)
-        resposta = RedirectResponse(destino, status_code=302, headers=_sem_cache())
+        resposta = RedirectResponse(destino, status_code=302,
+                                    headers=_sem_cache(secrets.token_urlsafe(16)))
         resposta.delete_cookie(COOKIE_CSRF, path="/login")
         return resposta
 

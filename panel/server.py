@@ -245,6 +245,49 @@ def acessos(request: Request) -> JSONResponse:
     return JSONResponse(dados)
 
 
+def logins(request: Request) -> JSONResponse:
+    """Quem entrou no MCP, e quais sessões estão de pé.
+
+    Só leitura. Nenhum token aparece aqui — nem cortado: eles são guardados
+    como hash e não há como exibi-los, que é justamente o ponto.
+    """
+    c = cfg()
+    dados: dict[str, Any] = {
+        "ligada": c.auth.enabled,
+        "grupo": c.auth.ldap.group_dn if c.auth.ldap else None,
+        "diretorio": c.auth.ldap.url if c.auth.ldap else None,
+        "publico": c.auth.public_url or None,
+        "tentativas": [],
+        "sessoes": [],
+        "clientes": [],
+    }
+    if not c.auth.enabled:
+        # Sem autenticação ligada não há o que mostrar, e inventar uma lista
+        # vazia sem dizer por quê faria parecer que ninguém entrou.
+        return JSONResponse(dados)
+    try:
+        from auth.store import AuthStore
+
+        store = AuthStore(c.auth.db_path)
+        dados["tentativas"] = store.ultimos_logins(150)
+        dados["sessoes"] = store.sessoes_ativas()
+        dados["clientes"] = [
+            {"client_id": cl["client_id"], "criado_em": cl["criado_em"],
+             "nome": _nome_do_cliente(cl["dados_json"])}
+            for cl in store.listar_clientes()
+        ]
+    except Exception as exc:  # noqa: BLE001
+        dados["erro"] = str(exc)
+    return JSONResponse(dados)
+
+
+def _nome_do_cliente(bruto: str) -> str:
+    try:
+        return json.loads(bruto).get("client_name") or "sem nome"
+    except Exception:  # noqa: BLE001
+        return "sem nome"
+
+
 def testar_confluence(request: Request) -> JSONResponse:
     """Login + getSpaces ao vivo. É o teste que revela perda de permissão.
 
@@ -385,6 +428,7 @@ ROTAS = [
     Route("/", home),
     Route("/api/estado", estado),
     Route("/api/acessos", acessos),
+    Route("/api/logins", logins),
     Route("/api/confluence/testar", testar_confluence, methods=["POST"]),
     Route("/api/mudancas", ver_mudancas),
     Route("/api/logs", ver_logs),

@@ -6,7 +6,7 @@
 
 <p align="center">
   <code>https://wmw-rag.wmw.com.br/</code><br>
-  <sub>busca híbrida · somente leitura · 65.756 documentos indexados</sub>
+  <sub>busca híbrida · login pela conta da rede · somente leitura · 65.756 documentos indexados</sub>
 </p>
 
 ---
@@ -32,6 +32,9 @@ URL de origem de cada afirmação.
 nenhum conteúdo é enviado para API de terceiro. O acesso é **somente leitura**:
 não existe uma única chamada de escrita em nenhum dos dois conectores.
 
+**E exige login.** A identidade é a sua conta da rede WMW, conferida no LDAP da
+empresa na hora. Nenhuma senha é guardada por este projeto.
+
 ---
 
 ## Conectar o seu cliente de IA
@@ -48,8 +51,26 @@ https://wmw-rag.wmw.com.br/
 ```
 
 > A barra final faz parte do endereço: o endpoint MCP está na **raiz**, não em
-> `/mcp`. E não há senha, token nem OAuth — escolha "sem autenticação" quando o
-> cliente perguntar.
+> `/mcp`. Quando o cliente perguntar o tipo de autenticação, escolha **OAuth**
+> — ou deixe no automático, que é o padrão de todos eles.
+
+### O login, uma vez só
+
+Na primeira conexão o cliente **abre o seu navegador** numa tela da WMW. Você
+entra com o usuário e a senha da rede, e pronto: o cliente guarda um token e
+renova sozinho daí em diante.
+
+Repare no que *não* acontece: a sua senha nunca é digitada dentro do Claude,
+do ChatGPT ou de qualquer outro cliente. Eles abrem o navegador na nossa
+página e recebem de volta só um token. É por isso que o mesmo desenho funciona
+em todos eles sem precisar confiar em nenhum.
+
+A tela diz **qual aplicativo** está pedindo acesso. Se aparecer um nome que
+você não abriu, não entre — é exatamente assim que se percebe um pedido que
+não partiu de você.
+
+Quem pode entrar: quem estiver no grupo do diretório configurado em
+`LDAP_GROUP_DN`. Ter conta na rede não basta.
 
 ### Passo 0 — você alcança o servidor?
 
@@ -253,6 +274,11 @@ busca traz a URL de origem, sempre.
 | sintoma | causa provável | o que fazer |
 |---|---|---|
 | o `curl` do passo 0 trava ou dá `000` | rede | é preciso alcançar `wmw-rag.wmw.com.br`. No Wi-Fi isso oscila |
+| o navegador não abre sozinho | cliente em máquina sem navegador | o fluxo precisa de navegador na mesma máquina. Em sessão SSH sem X11 não funciona |
+| "usuário ou senha inválidos" com a senha certa | você não está no grupo exigido | a mensagem é a mesma de propósito, para a tela não virar um enumerador. Peça para ser incluído no grupo |
+| "Muitas tentativas. Tente de novo em N minutos" | o freio travou | é a proteção que impede esta tela de bloquear contas no diretório. Espere o tempo indicado |
+| `401` depois de um tempo funcionando | token expirado e não renovado | reconecte o servidor no cliente; ele refaz o login |
+| "Pedido de login inválido ou expirado" | a tela ficou aberta tempo demais | volte ao aplicativo e mande conectar de novo |
 | o cliente conecta mas não lista ferramenta | transporte errado | tem que ser `http` / Streamable HTTP, não `sse` |
 | `404` ou "endpoint not found" | path errado | o endereço é a **raiz**, com a barra final. Não é `/mcp` nem `/sse` |
 | alguém mandou usar `npx mcp-remote` | guia velho | não precisa. Use a URL direto |
@@ -283,15 +309,38 @@ Nesta instalação, hoje:
 
 - o escopo do Confluence está em `auto` — **os 716 espaços** visíveis ao usuário
   de serviço estão indexados, inclusive os 651 espaços de cliente;
-- `https://wmw-rag.wmw.com.br/` resolve na internet e **responde sem
-  credencial nenhuma**. O nome está público nos logs de Certificate Transparency
-  do certificado Let's Encrypt;
-- não há registro de quem perguntou o quê.
+- `https://wmw-rag.wmw.com.br/` resolve na internet, e o nome está público nos
+  logs de Certificate Transparency do certificado Let's Encrypt;
+- desde **14/09/2026** ele **exige login**: quem chega sem token recebe `401`.
 
-Enquanto não houver autenticação na frente do proxy, **trate o conteúdo indexado
-como material publicado**. Se isso não for aceitável, o caminho é reduzir
-`CONFLUENCE_SPACES` para a lista de espaços internos e pôr autenticação no
-proxy — não adianta contar com o firewall, que não protege este endereço.
+**O que o login resolve, e o que ele não resolve.** Ele fecha a porta para
+quem não é da empresa, e passa a registrar quem entrou. Ele **não** aplica as
+permissões por espaço do Confluence: quem está no grupo continua enxergando
+tudo que foi indexado, os espaços de cliente inclusive. Fechar isso pede
+filtrar a busca por espaço, usando o `space_key` que já está no payload de
+cada fatia — é trabalho de outra fase, e ela deveria existir.
+
+### Como a autenticação foi feita
+
+- **OAuth 2.1**, o padrão do próprio MCP, com o registro dinâmico ligado: é o
+  que faz cada cliente conectar sem ninguém digitar `client_id`. Registrar não
+  dá acesso a nada — quem decide é o diretório na tela seguinte;
+- **a identidade é o LDAP, e só ele.** Não existe tabela de usuários, não
+  existe cadastro, e nenhuma senha é guardada aqui, nem em hash. O bind é feito
+  com a credencial da própria pessoa, o que também dispensa conta de serviço:
+  nenhuma credencial do diretório fica no `.env`;
+- **o freio de tentativas protege o diretório, não este servidor.** A tela
+  responde da internet e faz bind no LDAP corporativo; sem freio, um script de
+  fora trancaria contas de gente que nem sabe que isto existe. Passado o limite
+  por usuário, a tentativa **não é encaminhada ao LDAP**;
+- **token opaco, guardado como hash**, num SQLite separado do document store.
+  Revogar é um `UPDATE`, e um vazamento do arquivo não entrega credencial
+  utilizável;
+- **erro de login é um só** para senha errada, usuário inexistente e usuário
+  fora do grupo. Distinguir os casos transformaria a tela num jeito de
+  descobrir quem trabalha na empresa.
+
+Quem entrou aparece no painel de operação, na aba **Logins**.
 
 O que o código garante, independentemente disso:
 

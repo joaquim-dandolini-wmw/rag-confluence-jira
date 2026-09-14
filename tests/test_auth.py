@@ -179,14 +179,40 @@ def test_pedido_expirado_e_recusado() -> None:
 
 # ----------------------------------------------------------------- tela ----
 def test_tela_escapa_o_que_vem_de_fora() -> None:
+    """O nome do cliente vem do registro dinâmico, que é aberto: é texto de
+    terceiro entrando numa página que recebe senha."""
     html = pagina.render(
         campos_ocultos={"req": '"><script>alert(1)</script>'},
         cliente="<b>Cliente</b>",
         erro="<img onerror=x>",
     )
-    assert "<script>" not in html
-    assert "&lt;script&gt;" in html
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "<b>Cliente</b>" not in html
+    assert "<img onerror=x>" not in html
+
+
+def test_script_da_pagina_carrega_o_nonce() -> None:
+    """Sem o nonce no <script>, o CSP da resposta bloquearia o próprio script."""
+    html = pagina.render(campos_ocultos={}, nonce="abc123")
+    assert '<script nonce="abc123">' in html
+    assert "<style>" in html, "o <style> NÃO pode levar nonce: ver auth/login.py"
+
+
+def test_tela_tem_os_dois_temas() -> None:
+    html = pagina.render(campos_ocultos={})
+    assert '[data-tema="escuro"]' in html
+    assert "prefers-color-scheme: dark" in html
+    # O texto da logo é azul-escuro no arquivo; sem esta regra ele some no preto.
+    assert "--logo-texto" in html and ".logo .wmw-st4" in html
+
+
+def test_erro_fatal_nao_mostra_formulario() -> None:
+    """Sem pedido válido não há o que enviar: o formulário não deve existir."""
+    html = pagina.render(campos_ocultos={}, erro="pedido inválido",
+                         com_formulario=False)
+    assert "<form" not in html
+    assert 'name="senha"' not in html
 
 
 def test_tela_traz_a_logo_embutida() -> None:
