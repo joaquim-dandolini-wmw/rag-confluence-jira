@@ -6,11 +6,11 @@
 # proposito: a chave nao serve para rodar comando arbitrario, so para falar
 # JSON-RPC com o servidor MCP pela stdin/stdout.
 #
-# Sem isto, uma chave em authorized_keys da shell completo como joaquimdp, o
+# Sem isto, uma chave em authorized_keys da shell completo como ubuntu, o
 # que inclui ler o .env com o PAT do Jira e a senha do Confluence.
 set -euo pipefail
 
-RAG_HOME=/home/joaquimdp/Documentos/rag
+RAG_HOME=/home/ubuntu/rag
 cd "$RAG_HOME"
 export PYTHONPATH="$RAG_HOME"
 

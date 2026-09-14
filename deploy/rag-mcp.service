@@ -5,24 +5,24 @@
 #   sudo systemctl daemon-reload && sudo systemctl enable --now rag-mcp
 #
 # Servico de SISTEMA e nao de usuario de proposito: precisa subir no boot sem
-# ninguem logar. Roda como joaquimdp, que nao tem privilegio administrativo
+# ninguem logar. Roda como ubuntu, que nao tem privilegio administrativo
 # nenhum aqui; /dev/kfd esta 0666, entao a GPU funciona sem grupo extra.
 #
 # O transporte, a porta e o bind vem do .env lido pelo config.py, nao daqui:
 # um lugar so para configurar, e o mesmo que a CLI usa.
 [Unit]
 Description=Servidor MCP de busca no Jira e Confluence
-Documentation=file:///home/joaquimdp/Documentos/rag/ACESSO-MCP.md
+Documentation=file:///home/ubuntu/rag/ACESSO-MCP.md
 After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
 Type=exec
-User=joaquimdp
-Group=joaquimdp
-WorkingDirectory=/home/joaquimdp/Documentos/rag
-Environment=PYTHONPATH=/home/joaquimdp/Documentos/rag
-ExecStart=/home/joaquimdp/Documentos/rag/.venv/bin/python -m mcp_server.server
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/rag
+Environment=PYTHONPATH=/home/ubuntu/rag
+ExecStart=/home/ubuntu/rag/.venv/bin/python -m mcp_server.server
 Restart=on-failure
 RestartSec=5
 # Carga do e5 e do reranker na GPU na primeira consulta.

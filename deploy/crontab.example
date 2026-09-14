@@ -3,7 +3,7 @@
 # TODAS AS LINHAS ESTAO COMENTADAS DE PROPOSITO. Habilite-as só depois que a
 # Fase 2 estiver validada, com:  crontab deploy/crontab.example
 #
-# Roda como o usuário joaquimdp, que não tem privilégio administrativo. O acesso
+# Roda como o usuário ubuntu, que não tem privilégio administrativo. O acesso
 # ao Jira e ao Confluence é somente leitura; o Qdrant fica em 127.0.0.1.
 #
 # O cron NÃO carrega o shell interativo, e o shell deste usuário é fish, que não
@@ -15,19 +15,19 @@ PATH=/usr/local/bin:/usr/bin:/bin
 MAILTO=""
 
 # Diretório da aplicação e do venv (Python 3.12, com torch ROCm).
-# RAG_HOME=/home/joaquimdp/Documentos/rag
+# RAG_HOME=/home/ubuntu/rag
 
 # --- Jira: incremental a cada 15 minutos --------------------------------------
 # O incremental é server-side via JQL e é barato (~1,5 ms/issue).
-#*/15 * * * * cd /home/joaquimdp/Documentos/rag && PYTHONPATH=/home/joaquimdp/Documentos/rag .venv/bin/python -m indexer.sync run --only jira >> logs/sync-jira.log 2>&1
+#*/15 * * * * cd /home/ubuntu/rag && PYTHONPATH=/home/ubuntu/rag .venv/bin/python -m indexer.sync run --only jira >> logs/sync-jira.log 2>&1
 
 # --- Confluence: uma vez por noite --------------------------------------------
 # getPages é caro e não filtra por data: um espaço grande leva de 70 a 181 s numa
 # única chamada. --no-count-attachments corta um terço dos round-trips e só faz
 # sentido depois que a primeira rodada já produziu a contagem de anexos.
-#0 2 * * * cd /home/joaquimdp/Documentos/rag && PYTHONPATH=/home/joaquimdp/Documentos/rag .venv/bin/python -m indexer.sync run --only confluence --no-count-attachments >> logs/sync-confluence.log 2>&1
+#0 2 * * * cd /home/ubuntu/rag && PYTHONPATH=/home/ubuntu/rag .venv/bin/python -m indexer.sync run --only confluence --no-count-attachments >> logs/sync-confluence.log 2>&1
 
 # --- Reconciliação de deleções do Jira: semanal -------------------------------
 # Varre todas as chaves do escopo: barato em payload, caro em número de
 # requisições. Fica fora do caminho quente de 15 minutos.
-#30 3 * * 0 cd /home/joaquimdp/Documentos/rag && PYTHONPATH=/home/joaquimdp/Documentos/rag .venv/bin/python -m indexer.sync reconcile --only jira >> logs/reconcile.log 2>&1
+#30 3 * * 0 cd /home/ubuntu/rag && PYTHONPATH=/home/ubuntu/rag .venv/bin/python -m indexer.sync reconcile --only jira >> logs/reconcile.log 2>&1

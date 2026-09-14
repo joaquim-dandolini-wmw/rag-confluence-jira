@@ -7,23 +7,23 @@
 # O painel ESCREVE no crontab do usuario e nao tem autenticacao. Por isso o
 # padrao do PANEL_HOST e 127.0.0.1: para acessar de outra maquina, tunel SSH
 #
-#   ssh -L 8770:127.0.0.1:8770 joaquimdp@10.2.1.132
+#   ssh -L 8770:127.0.0.1:8770 ubuntu@10.2.1.132
 #
-# Roda como joaquimdp porque e o crontab DELE que o painel gerencia; como root
+# Roda como ubuntu porque e o crontab DELE que o painel gerencia; como root
 # ele editaria o crontab errado.
 [Unit]
 Description=Painel de operacao do rag-confluence-jira
-Documentation=file:///home/joaquimdp/Documentos/rag/INICIALIZACAO.md
+Documentation=file:///home/ubuntu/rag/INICIALIZACAO.md
 After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
 Type=exec
-User=joaquimdp
-Group=joaquimdp
-WorkingDirectory=/home/joaquimdp/Documentos/rag
-Environment=PYTHONPATH=/home/joaquimdp/Documentos/rag
-ExecStart=/home/joaquimdp/Documentos/rag/.venv/bin/python -m panel.server
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/rag
+Environment=PYTHONPATH=/home/ubuntu/rag
+ExecStart=/home/ubuntu/rag/.venv/bin/python -m panel.server
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

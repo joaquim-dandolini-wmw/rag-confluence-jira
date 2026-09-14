@@ -7,13 +7,13 @@
 #
 # su é obrigatório: o diretório está dentro do home de um usuário sem
 # privilégio, e o logrotate roda como root.
-/home/joaquimdp/Documentos/rag/logs/*.log {
-    su joaquimdp joaquimdp
+/home/ubuntu/rag/logs/*.log {
+    su ubuntu ubuntu
     weekly
     rotate 8
     compress
     delaycompress
     missingok
     notifempty
-    create 0640 joaquimdp joaquimdp
+    create 0640 ubuntu ubuntu
 }

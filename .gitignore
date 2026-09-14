@@ -7,3 +7,6 @@ models/
 .pytest_cache/
 logs/
 certs/
+*.bak
+.env.bak-*
+deploy/crontab.ativo
