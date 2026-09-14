@@ -1,33 +1,35 @@
-# Esqueleto de crontab do rag-confluence-jira.
+# Janela de meia-noite do rag-confluence-jira. Uma rodada por dia, ate acabar.
 #
-# TODAS AS LINHAS ESTAO COMENTADAS DE PROPOSITO. Habilite-as só depois que a
-# Fase 2 estiver validada, com:  crontab deploy/crontab.example
+# Instalar com:  crontab deploy/crontab.example
+# O painel (panel/, §7 do INICIALIZACAO.md) escreve este mesmo bloco ao salvar
+# a agenda -- ele costura por marcadores e preserva job de terceiro.
 #
-# Roda como o usuário ubuntu, que não tem privilégio administrativo. O acesso
-# ao Jira e ao Confluence é somente leitura; o Qdrant fica em 127.0.0.1.
+# Roda como o usuario dono da aplicacao, sem privilegio administrativo. O acesso
+# ao Jira e ao Confluence e somente leitura; o Qdrant fica em 127.0.0.1.
 #
-# O cron NÃO carrega o shell interativo, e o shell deste usuário é fish, que não
-# entende a sintaxe do sh. Por isso cada linha é autocontida e o ambiente vem do
-# .env lido pelo próprio config.py, nunca de variável de shell.
+# O cron NAO carrega shell interativo. Por isso cada linha e autocontida e o
+# ambiente vem do .env lido pelo proprio config.py, nunca de variavel de shell.
 
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 MAILTO=""
 
-# Diretório da aplicação e do venv (Python 3.12, com torch ROCm).
-# RAG_HOME=/home/ubuntu/rag
+# Diretorio da aplicacao e do venv. Ajuste se instalar em outro lugar.
+RAG=/home/ubuntu/rag
 
-# --- Jira: incremental a cada 15 minutos --------------------------------------
-# O incremental é server-side via JQL e é barato (~1,5 ms/issue).
-#*/15 * * * * cd /home/ubuntu/rag && PYTHONPATH=/home/ubuntu/rag .venv/bin/python -m indexer.sync run --only jira >> logs/sync-jira.log 2>&1
+# --- Segunda a sabado ---------------------------------------------------------
+# extract + index + embed das duas fontes, numa rodada so.
+#
+# flock -n garante uma rodada por vez: se uma noite atrasar e passar da
+# meia-noite seguinte, a nova desiste em vez de duas disputarem o mesmo SQLite.
+# O -n e o que faz desistir na hora, sem enfileirar.
+#
+# --no-count-attachments corta um terco dos round-trips do Confluence (cada
+# pagina custa getPage + getAttachments + getLabelsById) e so faz sentido depois
+# que a primeira rodada ja produziu a contagem de anexos.
+0 0 * * 1-6 cd $RAG && flock -n /tmp/rag-sync.lock env PYTHONPATH=$RAG .venv/bin/python -m indexer.sync run --no-count-attachments >> logs/noturno.log 2>&1
 
-# --- Confluence: uma vez por noite --------------------------------------------
-# getPages é caro e não filtra por data: um espaço grande leva de 70 a 181 s numa
-# única chamada. --no-count-attachments corta um terço dos round-trips e só faz
-# sentido depois que a primeira rodada já produziu a contagem de anexos.
-#0 2 * * * cd /home/ubuntu/rag && PYTHONPATH=/home/ubuntu/rag .venv/bin/python -m indexer.sync run --only confluence --no-count-attachments >> logs/sync-confluence.log 2>&1
-
-# --- Reconciliação de deleções do Jira: semanal -------------------------------
-# Varre todas as chaves do escopo: barato em payload, caro em número de
-# requisições. Fica fora do caminho quente de 15 minutos.
-#30 3 * * 0 cd /home/ubuntu/rag && PYTHONPATH=/home/ubuntu/rag .venv/bin/python -m indexer.sync reconcile --only jira >> logs/reconcile.log 2>&1
+# --- Domingo ------------------------------------------------------------------
+# A mesma rodada e, DEPOIS dela, a reconciliacao de delecoes do Jira. O && a
+# encadeia dentro do MESMO lock, em vez de agendar em paralelo.
+0 0 * * 0 cd $RAG && flock -n /tmp/rag-sync.lock bash -c 'env PYTHONPATH=$RAG .venv/bin/python -m indexer.sync run --no-count-attachments && env PYTHONPATH=$RAG .venv/bin/python -m indexer.sync reconcile --only jira' >> logs/noturno.log 2>&1

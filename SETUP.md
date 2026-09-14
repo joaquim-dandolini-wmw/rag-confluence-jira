@@ -1,7 +1,23 @@
 # SETUP — máquina de IA (servidor do rag-confluence-jira)
 
-Reprodução exata desta máquina. Todos os números aqui foram **medidos nela**,
-não estimados. Data da instalação: **2026-09-09**.
+> **Este documento descreve a máquina com GPU**, instalada em 2026-09-09: um
+> desktop CachyOS com uma RX 6900 XT, usuário `joaquimdp`, aplicação em
+> `/home/joaquimdp/Documentos/rag`.
+>
+> **Não é onde o serviço roda hoje.** A produção mudou para uma VM Ubuntu
+> (`wmwrag`, 10.1.1.114, usuário `ubuntu`, aplicação em `/home/ubuntu/rag`),
+> com 8 vCPU, 16 GB e **sem GPU**: `EMBED_DEVICE=cpu` e `RERANK_ENABLED=0`.
+>
+> O que continua valendo aqui: as medições da seção 13 (carga do vetor denso,
+> ajuste da fusão, reranker), que são propriedade dos modelos e não da máquina,
+> e todo o roteiro de GPU/ROCm para quem for montar um host com placa. O que
+> **não** vale mais: caminhos, nome de usuário, shell e hardware.
+>
+> Para subir em máquina nova — com ou sem GPU — o documento é o
+> [INICIALIZACAO.md](INICIALIZACAO.md).
+
+Reprodução exata da máquina com GPU. Todos os números aqui foram **medidos
+nela**, não estimados. Data da instalação: **2026-09-09**.
 
 ---
 

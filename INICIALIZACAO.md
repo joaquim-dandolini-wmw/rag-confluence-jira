@@ -128,10 +128,13 @@ VIRTUAL_ENV=.venv uv pip install "sentence-transformers>=3,<6"
 # COM GPU AMD, o wheel é outro e a verificação importa: SETUP.md §4.
 ```
 
-O caminho `/home/joaquimdp/Documentos/rag` e o nome do usuário estão escritos
-por extenso em `deploy/rag-mcp.service`, `deploy/rag-painel.service`,
-`deploy/crontab.example` e `deploy/mcp-stdio.sh`. Se for diferente, edite os
-quatro — serviço e cron falham em silêncio.
+O caminho da aplicação e o nome do usuário estão escritos por extenso em
+`deploy/rag-mcp.service`, `deploy/rag-painel.service`, `deploy/crontab.example`
+e `deploy/mcp-stdio.sh` — hoje `/home/ubuntu/rag`, usuário `ubuntu`. Se for
+diferente, edite os quatro: serviço e cron falham em silêncio.
+
+Nos comandos abaixo, `ANTIGA` é o `usuario@host` da máquina de onde você está
+saindo.
 
 ### Modelos
 
@@ -140,7 +143,7 @@ faltar, ele aborta dizendo qual, em vez de baixar 4,3 GB no meio de uma rodada.
 
 ```bash
 # a) copiar da máquina antiga — o caminho normal numa migração
-rsync -a --info=progress2 joaquimdp@10.2.1.132:~/Documentos/rag/models/ models/
+rsync -a --info=progress2 ANTIGA:caminho/do/rag/models/ models/
 
 # b) baixar, se esta máquina tem internet
 ALLOW_MODEL_DOWNLOAD=1 .venv/bin/python -m scripts.precache_models
@@ -163,7 +166,7 @@ só CPU e disco.
 ## 4. Configuração
 
 ```bash
-scp joaquimdp@10.2.1.132:~/Documentos/rag/.env .env    # ou cp .env.example .env
+scp ANTIGA:caminho/do/rag/.env .env                    # ou cp .env.example .env
 ```
 
 Três coisas mudam ao trocar de máquina:
@@ -212,7 +215,7 @@ o `.backup`, que é consistente **com o banco em uso**:
 # na máquina ANTIGA
 sqlite3 data/documents.sqlite3 ".backup /tmp/store-migracao.sqlite3"
 # na máquina NOVA
-scp joaquimdp@10.2.1.132:/tmp/store-migracao.sqlite3 data/documents.sqlite3
+scp ANTIGA:/tmp/store-migracao.sqlite3 data/documents.sqlite3
 ```
 
 ### 5.2 O índice — snapshot da coleção
@@ -234,7 +237,7 @@ curl -s -o /tmp/$NOME \
      "http://127.0.0.1:6333/collections/atlassian_kb/snapshots/$NOME"
 
 # 3. leva
-scp /tmp/$NOME joaquimdp@IP-NOVO:/tmp/
+scp /tmp/$NOME NOVA:/tmp/
 
 # 4. na máquina NOVA, com o Qdrant de pé
 curl -s -X POST \
@@ -307,7 +310,7 @@ de horário; à mão, é o `deploy/crontab.example`:
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 MAILTO=""
-RAG=/home/joaquimdp/Documentos/rag
+RAG=/home/ubuntu/rag
 
 # Segunda a sábado: extract + index + embed das duas fontes.
 0 0 * * 1-6 cd $RAG && flock -n /tmp/rag-sync.lock env PYTHONPATH=$RAG .venv/bin/python -m indexer.sync run --no-count-attachments >> logs/noturno.log 2>&1
@@ -329,8 +332,9 @@ Por que está escrito assim:
 - **o `&&` do domingo** encadeia o `reconcile` depois da rodada, dentro do mesmo
   lock, em vez de agendá-lo em paralelo;
 - **o ambiente vem do `.env`**, lido pelo `config.py`. O cron não carrega shell
-  interativo, e a máquina de referência usa `fish`, que não entende sintaxe de
-  `sh`: cada linha é autocontida de propósito.
+  interativo, e a primeira máquina de referência usava `fish`, que não entende
+  sintaxe de `sh`: cada linha é autocontida de propósito, e continua assim
+  porque é o que sobrevive a trocar de máquina.
 
 ### Quanto dura cada noite
 
@@ -456,7 +460,7 @@ PANEL_PASSWORD=...            # obrigatória fora do loopback
 
 ```bash
 # ou, sem abrir porta nenhuma, mantendo PANEL_HOST=127.0.0.1
-ssh -L 8770:127.0.0.1:8770 joaquimdp@IP-DA-MAQUINA
+ssh -L 8770:127.0.0.1:8770 ubuntu@10.1.1.114
 ```
 
 Três limites que valem saber:

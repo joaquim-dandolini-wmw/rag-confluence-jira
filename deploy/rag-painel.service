@@ -7,7 +7,7 @@
 # O painel ESCREVE no crontab do usuario e nao tem autenticacao. Por isso o
 # padrao do PANEL_HOST e 127.0.0.1: para acessar de outra maquina, tunel SSH
 #
-#   ssh -L 8770:127.0.0.1:8770 ubuntu@10.2.1.132
+#   ssh -L 8770:127.0.0.1:8770 ubuntu@10.1.1.114
 #
 # Roda como ubuntu porque e o crontab DELE que o painel gerencia; como root
 # ele editaria o crontab errado.

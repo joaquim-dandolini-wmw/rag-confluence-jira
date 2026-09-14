@@ -12,7 +12,7 @@ um botão; o `flock` que protege isso está no crontab, não aqui.
 Segurança: o painel ESCREVE no crontab, então há duas travas.
 
   - o padrão é escutar só em 127.0.0.1. Para acessar de outra máquina sem abrir
-    nada, túnel SSH:  ssh -L 8770:127.0.0.1:8770 joaquimdp@10.2.1.132
+    nada, túnel SSH:  ssh -L 8770:127.0.0.1:8770 ubuntu@10.1.1.114
   - para atender a rede (PANEL_HOST=0.0.0.0) é OBRIGATÓRIO definir
     PANEL_PASSWORD. Sem senha na rede o painel se RECUSA a subir, no mesmo
     espírito do escopo vazio que aborta a extração: uma configuração que

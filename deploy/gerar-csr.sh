@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Gera uma CSR para pedir certificado à CA da empresa.
 #
-#   ./deploy/gerar-csr.sh rag.wmw.com.br 10.2.1.132
+#   ./deploy/gerar-csr.sh wmw-rag.wmw.com.br 10.1.1.114
 #
 # Entregue o .csr para quem administra a CA (normalmente a TI). A chave privada
 # NAO sai desta maquina: a CSR contem so a parte publica.
