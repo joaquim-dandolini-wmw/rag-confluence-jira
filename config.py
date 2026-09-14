@@ -174,6 +174,25 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.lower() in {"1", "true", "yes", "on", "sim"}
 
 
+def _env_int(name: str, default: int) -> int:
+    """Inteiro do ambiente, caindo no padrão em vez de derrubar o processo.
+
+    Um TTL escrito errado não pode impedir o servidor de subir: o padrão é
+    seguro, e o valor inválido aparece no log em vez de virar traceback.
+    """
+    raw = _env(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logging.getLogger("config").warning(
+            "valor inválido, usando o padrão",
+            extra={"variavel": name, "valor": raw, "padrao": default},
+        )
+        return default
+
+
 def _env_list(name: str) -> tuple[str, ...]:
     raw = _env(name)
     if raw is None:
@@ -298,6 +317,41 @@ class RerankConfig:
 
 
 @dataclass(frozen=True)
+class LdapConfig:
+    """Autenticação por bind direto no diretório da empresa.
+
+    Não há conta de serviço: o bind é feito com a credencial da própria
+    pessoa. O grupo é o que separa "é funcionário" de "pode usar este RAG".
+    """
+
+    url: str
+    bind_dn_template: str
+    group_dn: str
+    member_attribute: str
+
+
+@dataclass(frozen=True)
+class AuthConfig:
+    """OAuth 2.1 na frente do MCP, com o LDAP como fonte de identidade.
+
+    Desligado por padrão para que um `git clone` suba sem diretório nenhum.
+    Ligar é a decisão de operação que fecha o servidor: com isto em 1, quem
+    chega sem token leva 401 e todo cliente precisa passar pelo login.
+    """
+
+    enabled: bool
+    # URL pública, como o cliente digita. Vai literal nos metadados do OAuth,
+    # e a comparação de issuer é string por string: uma barra a mais aqui
+    # quebra o login inteiro, sem mensagem útil.
+    public_url: str
+    db_path: Path
+    ldap: LdapConfig | None
+    token_ttl_s: int
+    refresh_ttl_s: int
+    code_ttl_s: int
+
+
+@dataclass(frozen=True)
 class Config:
     store_path: Path
     qdrant_url: str
@@ -307,6 +361,7 @@ class Config:
     embedding: EmbeddingConfig
     rerank: RerankConfig
     mcp: McpConfig
+    auth: AuthConfig
     jira: JiraConfig | None = None
     confluence: ConfluenceConfig | None = None
     _errors: tuple[str, ...] = field(default=(), repr=False)
@@ -465,6 +520,62 @@ def load_config(*, dotenv: bool = True) -> Config:
         tls_key=Path(key) if key else None,
     )
 
+    auth_on = _env_bool("MCP_AUTH_ENABLED", False)
+    ldap_url = _env("LDAP_URL")
+    ldap_dn = _env("LDAP_BIND_DN_TEMPLATE")
+    ldap_grupo = _env("LDAP_GROUP_DN")
+    ldap = None
+    if ldap_url and ldap_dn and ldap_grupo:
+        if "{username}" not in ldap_dn:
+            errors.append(
+                "LDAP_BIND_DN_TEMPLATE precisa conter {username}: é onde o nome "
+                "digitado entra no DN do bind."
+            )
+        else:
+            ldap = LdapConfig(
+                url=ldap_url,
+                bind_dn_template=ldap_dn,
+                group_dn=ldap_grupo,
+                member_attribute=_env("LDAP_GROUP_MEMBER_ATTRIBUTE") or "memberOf",
+            )
+    elif any((ldap_url, ldap_dn, ldap_grupo)):
+        errors.append(
+            "LDAP_URL, LDAP_BIND_DN_TEMPLATE e LDAP_GROUP_DN vão juntos: com "
+            "parte da configuração o login não teria como recusar ninguém."
+        )
+
+    publico = (_env("MCP_PUBLIC_URL") or "").rstrip("/")
+    if auth_on:
+        # Abortar aqui é de propósito. Um servidor que sobe com MCP_AUTH_ENABLED=1
+        # e autenticação incompleta atenderia sem pedir nada, que é exatamente o
+        # contrário do que quem ligou a variável pediu.
+        if ldap is None:
+            errors.append(
+                "MCP_AUTH_ENABLED=1 exige LDAP_URL, LDAP_BIND_DN_TEMPLATE e "
+                "LDAP_GROUP_DN: sem diretório não há como autenticar ninguém."
+            )
+        if not publico:
+            errors.append(
+                "MCP_AUTH_ENABLED=1 exige MCP_PUBLIC_URL (ex.: "
+                "https://wmw-rag.wmw.com.br): é o endereço que vai nos metadados "
+                "do OAuth e nos endereços de retorno do login."
+            )
+        elif not publico.startswith("https://"):
+            errors.append(
+                f"MCP_PUBLIC_URL={publico!r} não é https. O OAuth carrega código "
+                "e token na URL de retorno; em http eles viajam em claro."
+            )
+
+    auth = AuthConfig(
+        enabled=auth_on,
+        public_url=publico,
+        db_path=Path(_env("MCP_AUTH_DB") or (REPO_ROOT / "data" / "auth.sqlite3")),
+        ldap=ldap,
+        token_ttl_s=_env_int("MCP_TOKEN_TTL", 8 * 3600),
+        refresh_ttl_s=_env_int("MCP_REFRESH_TTL", 30 * 86400),
+        code_ttl_s=_env_int("MCP_CODE_TTL", 300),
+    )
+
     embedding = EmbeddingConfig(
         model_name=_env("EMBED_MODEL") or DEFAULT_EMBED_MODEL,
         cache_dir=Path(_env("EMBED_CACHE_DIR") or REPO_ROOT / "models" / "e5"),
@@ -542,6 +653,7 @@ def load_config(*, dotenv: bool = True) -> Config:
         errors.append("Nenhuma fonte configurada: defina JIRA_URL e/ou CONFLUENCE_URL.")
 
     return Config(
+        auth=auth,
         store_path=store_path,
         qdrant_url=qdrant_url.rstrip("/"),
         collection=collection,

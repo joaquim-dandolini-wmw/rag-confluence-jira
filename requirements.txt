@@ -7,3 +7,5 @@ qdrant-client>=1.12,<2
 fastembed>=0.6,<1
 # O SDK 2.x renomeou FastMCP para MCPServer; mcp_server/server.py usa a API 2.x.
 mcp>=2.0,<3
+# Autenticacao: bind direto no diretorio da empresa. Wheel pura, sem compilar.
+ldap3>=2.9,<3

@@ -409,6 +409,58 @@ def get_confluence_page(page_id: str) -> dict[str, Any]:
     }
 
 
+def _ligar_autenticacao(cfg) -> None:
+    """Põe o OAuth na frente do MCP, com o LDAP decidindo quem entra.
+
+    O `server` é criado no topo do módulo, porque é nele que os decoradores
+    registram as quatro ferramentas — e nessa hora ainda não há configuração
+    lida. O SDK, porém, só consulta estes três atributos quando o app HTTP é
+    montado, que é depois daqui. Por isso a ligação acontece em tempo de
+    execução, num lugar só, e não no construtor.
+    """
+    from mcp.server.auth.provider import ProviderTokenVerifier
+    from mcp.server.auth.settings import (
+        AuthSettings,
+        ClientRegistrationOptions,
+        RevocationOptions,
+    )
+
+    from auth.login import montar_rotas
+    from auth.provider import ESCOPO, LdapOAuthProvider
+    from auth.store import AuthStore
+
+    store = AuthStore(cfg.auth.db_path)
+    removidos = store.limpar_expirados()
+    if removidos:
+        LOG.info("estado de autenticação limpo", extra={"removidos": removidos})
+
+    provider = LdapOAuthProvider(store, cfg.auth)
+    server._auth_server_provider = provider
+    server._token_verifier = ProviderTokenVerifier(provider)
+    server.settings.auth = AuthSettings(
+        issuer_url=cfg.auth.public_url,
+        # O recurso é a URL do próprio MCP, com o caminho. Aqui ele é a raiz.
+        resource_server_url=cfg.auth.public_url + cfg.mcp.path.rstrip("/"),
+        # Quem valida a audiência do token somos nós, ao carregá-lo do store:
+        # todo token que existe lá foi emitido por este servidor, para este
+        # servidor. Deixar o SDK validar de novo exigiria que o cliente
+        # mandasse o indicador de recurso, e nem todos mandam.
+        validate_token_resource=False,
+        client_registration_options=ClientRegistrationOptions(
+            # Registro dinâmico ligado: é o que faz Claude Desktop, ChatGPT e
+            # os outros conectarem sem ninguém digitar client_id. Registrar não
+            # dá acesso a nada — quem decide é o LDAP na tela seguinte.
+            enabled=True,
+            valid_scopes=[ESCOPO],
+            default_scopes=[ESCOPO],
+        ),
+        revocation_options=RevocationOptions(enabled=True),
+        required_scopes=[ESCOPO],
+    )
+    for rota in montar_rotas(provider, cfg.auth):
+        server.custom_route(rota.path, methods=list(rota.methods or ["GET"]))(rota.endpoint)
+
+
 def main() -> int:
     setup_logging()
     cfg = load_config()
@@ -433,13 +485,22 @@ def main() -> int:
         server.run(transport="stdio")
         return 0
 
-    LOG.warning(
-        "servidor MCP escutando na rede SEM autenticação: quem alcançar a "
-        "porta lê todo o conteúdo indexado, sem as permissões por espaço do "
-        "Confluence. Restrinja no firewall.",
-        extra={"url": cfg.mcp.url, "transport": cfg.mcp.transport,
-               "hosts_aceitos": list(cfg.mcp.allowed_hosts)},
-    )
+    if cfg.auth.enabled:
+        _ligar_autenticacao(cfg)
+        LOG.info(
+            "servidor MCP com autenticação: OAuth 2.1 na frente, LDAP como "
+            "identidade. Quem chega sem token recebe 401.",
+            extra={"url": cfg.mcp.url, "publico": cfg.auth.public_url,
+                   "grupo": cfg.auth.ldap.group_dn if cfg.auth.ldap else None},
+        )
+    else:
+        LOG.warning(
+            "servidor MCP escutando na rede SEM autenticação: quem alcançar a "
+            "porta lê todo o conteúdo indexado, sem as permissões por espaço do "
+            "Confluence. Ligue MCP_AUTH_ENABLED=1 ou restrinja no firewall.",
+            extra={"url": cfg.mcp.url, "transport": cfg.mcp.transport,
+                   "hosts_aceitos": list(cfg.mcp.allowed_hosts)},
+        )
     from mcp.server.transport_security import TransportSecuritySettings
 
     seguranca = TransportSecuritySettings(
