@@ -1,8 +1,8 @@
 # Janela de meia-noite do rag-confluence-jira. Uma rodada por dia, ate acabar.
 #
 # Instalar com:  crontab deploy/crontab.example
-# O painel (panel/, §7 do INICIALIZACAO.md) escreve este mesmo bloco ao salvar
-# a agenda -- ele costura por marcadores e preserva job de terceiro.
+# O painel (panel/) escreve este mesmo bloco ao salvar a agenda -- ele costura
+# por marcadores e preserva job de terceiro.
 #
 # Roda como o usuario dono da aplicacao, sem privilegio administrativo. O acesso
 # ao Jira e ao Confluence e somente leitura; o Qdrant fica em 127.0.0.1.

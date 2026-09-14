@@ -100,9 +100,10 @@ def _resolve_device(requested: str, torch: Any) -> str:
         raise EmbeddingError(
             f"EMBED_DEVICE={requested} mas o PyTorch não vê nenhuma GPU.\n"
             f"torch={torch.__version__} hip={torch.version.hip}\n"
-            "Confira com `PATH=/opt/rocm/bin:$PATH rocminfo | grep gfx` e veja o "
-            "SETUP.md seção 4. Para rodar na CPU use EMBED_DEVICE=cpu - custa "
-            "~24x mais (medido: 3,7 contra 89 fatias/s)."
+            "Numa GPU AMD, confira com `PATH=/opt/rocm/bin:$PATH rocminfo | "
+            "grep gfx` que a arquitetura da placa está compilada no wheel do "
+            "torch. Para rodar na CPU use EMBED_DEVICE=cpu - custa ~24x mais "
+            "(medido: 3,7 contra 89 fatias/s)."
         )
 
     disponiveis = [

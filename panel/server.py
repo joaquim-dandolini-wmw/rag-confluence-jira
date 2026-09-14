@@ -122,8 +122,8 @@ class BasicAuth(BaseHTTPMiddleware):
 
     Sobre HTTP puro, Basic manda a senha em base64, que não é cifra. Numa LAN
     interna isso barra acesso casual, varredura e engano de DNS rebinding — não
-    barra quem consegue farejar o tráfego. Para isso seria TLS, e a decisão de
-    TLS deste projeto está registrada no ACESSO-MCP.md.
+    barra quem consegue farejar o tráfego. Para isso seria TLS, que neste
+    projeto é terminado no proxy reverso e não aqui dentro.
     """
 
     def __init__(self, app: Any, user: str, password: str) -> None:

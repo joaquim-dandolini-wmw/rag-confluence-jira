@@ -13,7 +13,7 @@
 # ele editaria o crontab errado.
 [Unit]
 Description=Painel de operacao do rag-confluence-jira
-Documentation=file:///home/ubuntu/rag/INICIALIZACAO.md
+Documentation=file:///home/ubuntu/rag/README.md
 After=network-online.target docker.service
 Wants=network-online.target
 

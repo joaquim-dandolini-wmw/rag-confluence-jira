@@ -58,8 +58,8 @@ DEFAULT_MCP_PATH: Final[str] = "/mcp"
 
 # Pesos da fusão RRF, na ordem (bm25, denso). NÃO são iguais de propósito: com
 # peso igual o denso derruba o acerto exato do BM25 em identificador, que é
-# justamente onde o denso não tem o que oferecer. Valores medidos - ver
-# SETUP.md. k é o denominador do RRF: 1/(k + rank).
+# justamente onde o denso não tem o que oferecer. Valores medidos na instância
+# real. k é o denominador do RRF: 1/(k + rank).
 DEFAULT_RRF_WEIGHT_BM25: Final[float] = 2.0
 DEFAULT_RRF_WEIGHT_DENSE: Final[float] = 1.0
 DEFAULT_RRF_K: Final[int] = 60

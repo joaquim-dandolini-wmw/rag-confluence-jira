@@ -12,7 +12,7 @@
 # um lugar so para configurar, e o mesmo que a CLI usa.
 [Unit]
 Description=Servidor MCP de busca no Jira e Confluence
-Documentation=file:///home/ubuntu/rag/ACESSO-MCP.md
+Documentation=file:///home/ubuntu/rag/README.md
 After=network-online.target docker.service
 Wants=network-online.target
 

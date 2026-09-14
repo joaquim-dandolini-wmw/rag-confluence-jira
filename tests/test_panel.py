@@ -366,7 +366,7 @@ def test_post_json_com_credencial_aplica(cliente_com_senha) -> None:
 
 
 def test_ruido_do_rocm_nao_e_evento() -> None:
-    """SETUP.md §12: o wheel do ROCm emite isto no import e não é defeito."""
+    """O wheel do ROCm emite isto no import e não é defeito."""
     eventos = panel_logs.parse([
         "(null): No such file or directory",
         "  (null): No such file or directory  ",

@@ -270,8 +270,6 @@ curl -s -X POST https://wmw-rag.wmw.com.br/ \
        "clientInfo":{"name":"curl","version":"1"}}}'
 ```
 
-Detalhes e casos de borda: **[ACESSO-MCP.md](ACESSO-MCP.md)**.
-
 ---
 
 ## Segurança — leia antes de indexar mais alguma coisa
@@ -394,11 +392,30 @@ E o custo, com identificador exato (alvo em 1º lugar, 3 execuções):
 | `VENDAS-14993` | 3/3 | 0/3 | 3/3 | **3/3** |
 | `PRUPSYNCPRODUTOS` | 3/3 | 0/3 | **0/3** | **3/3** |
 
-Há também um reranker cross-encoder (`BAAI/bge-reranker-v2-m3`) implementado,
-que reordena os candidatos da primeira etapa e melhora bastante a posição do
-alvo em consulta semântica. Ele está **desligado nesta instalação**, que roda em
-CPU — o custo por consulta não compensa aqui. As medições estão em
-[SETUP.md](SETUP.md) §13.
+### O reranker: uma segunda etapa, hoje desligada
+
+O bi-encoder vetoriza consulta e documento **separadamente**, então o vetor do
+documento tem que servir para toda consulta possível. Por isso ele acha o
+documento por sinônimo mas não o coloca no topo. Um cross-encoder
+(`BAAI/bge-reranker-v2-m3`) lê os dois **juntos** num forward só — muito mais
+preciso, e caro, por isso rodaria só sobre os 30 candidatos que a primeira etapa
+filtrou:
+
+| consulta em sinônimo puro | sem reranker | com reranker |
+|---|---|---|
+| "dados da fatura para pagamento em banco" | 8º | **3º** |
+| "administração de celulares dos vendedores" | fora da página | **5º** |
+
+Duas decisões que só apareceram medindo: **consulta com identificador não passa
+pelo reranker** (o cross-encoder julga relevância semântica, e `VENDAS-14993`
+quase não tem semântica — com ele o alvo caía de 1º para 2º); e **mais
+candidatos piora** — de 20 para 80, o alvo caiu da posição 3 para a 5, porque
+mais competição dilui.
+
+Está **desligado nesta instalação** (`RERANK_ENABLED=0`): na máquina com GPU
+custava 475 ms por consulta em prosa contra 19 ms sem ele, e aqui, em CPU, não
+compensa. Falha do reranker degrada para a ordem da primeira etapa, com aviso no
+log, em vez de quebrar a busca.
 
 ---
 
@@ -527,13 +544,80 @@ O servidor MCP sobe com:
 python -m mcp_server.server        # transporte conforme MCP_TRANSPORT
 ```
 
-`MCP_TRANSPORT=streamable-http` publica uma URL (é o modo em produção);
-`stdio` roda um processo por cliente, sem nada escutando na rede, e é a opção
-mais restritiva quando o acesso precisa ser por chave SSH revogável — veja
-`deploy/mcp-stdio.sh`, que tranca a chave no servidor MCP, sem shell e sem túnel.
+`MCP_TRANSPORT=streamable-http` publica uma URL — é o modo em produção, e o
+único que os clientes deste README usam. O TLS não é feito aqui: quem termina o
+certificado é o proxy reverso na frente, e o serviço fala HTTP na 8765.
+`stdio`, um processo por cliente, continua suportado pelo código para quem
+precisar rodar o servidor local junto do cliente.
+
+Em produção são dois serviços systemd, `rag-mcp` e `rag-painel`, com os unit
+files em `deploy/`. Nada de ambiente vai no unit: transporte, porta e bind saem
+todos do `.env` lido pelo `config.py`, para haver **um lugar só** de configurar.
 
 Há ainda um **painel web de operação** (`panel/`) na porta 8770: mostra as
-mudanças da última rodada, os logs, os acessos e a agenda.
+mudanças da última rodada, os logs, os acessos e a agenda. Ele **escreve no
+crontab** do usuário ao salvar o agendamento, e por isso o padrão é escutar só
+em `127.0.0.1`; para atender a rede é obrigatório definir `PANEL_PASSWORD`, sem
+a qual ele se recusa a subir.
+
+### A janela de meia-noite
+
+Uma rodada por dia, à meia-noite, até acabar — `deploy/crontab.example` traz o
+bloco pronto, que é o mesmo que o painel escreve:
+
+```bash
+crontab deploy/crontab.example
+sudo install -m 644 -o root -g root deploy/logrotate.rag /etc/logrotate.d/rag
+```
+
+O `flock -n` garante uma rodada por vez: se uma noite atrasar e passar da
+meia-noite seguinte, a nova desiste em vez de duas disputarem o mesmo SQLite.
+
+### Subir em máquina nova
+
+O store e o índice **viajam** — reconstruir do zero é de 9 a 22 h numa máquina
+sem GPU.
+
+O SQLite usa WAL, então um `cp` no meio de uma escrita leva metade de uma
+transação. Use o `.backup`, que é consistente com o banco em uso:
+
+```bash
+sqlite3 data/documents.sqlite3 ".backup /tmp/store.sqlite3"   # na ANTIGA
+scp ANTIGA:/tmp/store.sqlite3 data/documents.sqlite3          # na NOVA
+```
+
+O índice vai por snapshot do Qdrant. A coleção **não precisa existir** do outro
+lado: o upload a recria.
+
+```bash
+# na ANTIGA: cria e baixa
+NOME=$(curl -s -X POST http://127.0.0.1:6333/collections/atlassian_kb/snapshots        | python -c 'import json,sys; print(json.load(sys.stdin)["result"]["name"])')
+curl -s -o /tmp/$NOME "http://127.0.0.1:6333/collections/atlassian_kb/snapshots/$NOME"
+scp /tmp/$NOME NOVA:/tmp/
+
+# na NOVA, com o Qdrant de pé
+curl -s -X POST   "http://127.0.0.1:6333/collections/atlassian_kb/snapshots/upload?priority=snapshot"   -H 'Content-Type: multipart/form-data' -F "snapshot=@/tmp/$NOME"
+```
+
+`priority=snapshot` diz ao Qdrant que o arquivo vence o que estiver na coleção.
+Apague o snapshot da origem depois: ele ocupa quase o tamanho da coleção.
+
+**A armadilha, se você trouxer o store e NÃO o índice.** O índice é derivável do
+store, mas os dois `--*-all` são obrigatórios:
+
+```bash
+python -m indexer.sync index --reindex-all
+python -m indexer.sync embed --reembed-all
+```
+
+Sem eles, o store copiado já tem `indexed_hash` e `embedded_hash` preenchidos, o
+incremental conclui "nada pendente", e você fica com `pendentes idx: 0` num
+índice **vazio**: o `status` mente e a busca não acha nada.
+
+Numa carga do zero, `indexer.sync run` faz tudo na ordem certa — extrai,
+indexa e só então popula o vetor denso, porque o `embed` atualiza ponto que já
+existe. Faça acompanhando, na mão, não pelo cron: são horas, e é a única rodada
+em que tudo é novo. Queda no meio não perde trabalho.
 
 ### Testes
 
@@ -562,13 +646,9 @@ indexer/sync.py                  CLI extract / index / embed / run / reconcile /
 mcp_server/server.py             as quatro ferramentas MCP
 panel/                           painel web de operação
 scripts/precache_models.py       pré-cache dos modelos para operação offline
+deploy/                          unit files do systemd, crontab e logrotate
 tests/                           parser, chunking, transporte, escopo, embeddings, painel
 ```
 
-## Documentação
-
-| documento | para quê |
-|---|---|
-| **[ACESSO-MCP.md](ACESSO-MCP.md)** | conectar um cliente de IA, com os casos de borda |
-| **[INICIALIZACAO.md](INICIALIZACAO.md)** | subir do zero em máquina nova: hardware, migração do índice, janela noturna |
-| **[SETUP.md](SETUP.md)** | infraestrutura, versões exatas, medições, GPU e ROCm |
+Este README é a documentação do projeto. O `.env.example` documenta cada
+variável no lugar onde ela é definida, com o porquê de cada padrão.
