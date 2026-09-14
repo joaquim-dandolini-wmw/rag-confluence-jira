@@ -14,6 +14,8 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+from urllib.parse import urlsplit
+
 from auth import ldap as ldap_mod
 from auth import pagina
 from auth.provider import PedidoInvalido
@@ -54,10 +56,22 @@ def _erro_fatal(mensagem: str) -> HTMLResponse:
     nonce = secrets.token_urlsafe(16)
     corpo = pagina.render(campos_ocultos={}, erro=mensagem, nonce=nonce,
                           com_formulario=False)
+    # Sem pedido válido não há retorno conhecido — e não há formulário também.
     return HTMLResponse(corpo, status_code=400, headers=_sem_cache(nonce))
 
 
-def _sem_cache(nonce: str) -> dict[str, str]:
+def _origem(url: str) -> str | None:
+    """Só esquema://host:porta de uma URL. Vazio se não der para confiar nela."""
+    try:
+        partes = urlsplit(url)
+    except ValueError:
+        return None
+    if partes.scheme not in {"http", "https"} or not partes.netloc:
+        return None
+    return f"{partes.scheme}://{partes.netloc}"
+
+
+def _sem_cache(nonce: str, retorno: str | None = None) -> dict[str, str]:
     """Cabeçalhos da tela de login.
 
     O script do tema e do olho da senha é inline e roda com **nonce**, não com
@@ -69,7 +83,20 @@ def _sem_cache(nonce: str) -> dict[str, str]:
     O `style-src` continua com 'unsafe-inline' porque o SVG da logo traz um
     <style> próprio, que não tem como receber nonce — e pôr nonce em style-src
     faria o CSP ignorar o 'unsafe-inline' e bloquear justamente ele.
+
+    O `form-action` precisa incluir a ORIGEM DE RETORNO do cliente, e não só
+    'self'. O formulário posta aqui mesmo, mas o WebKit (Safari) aplica esta
+    diretiva também ao destino do REDIRECIONAMENTO que vem depois do POST — e
+    esse destino é, por construção, de outra origem: claude.ai, chatgpt.com,
+    http://localhost:PORTA. Com 'self' sozinho, o login dava certo no servidor
+    e o Safari bloqueava a volta, deixando a pessoa num laço de entrar sem
+    nunca retornar ao aplicativo.
+
+    A origem vem do pedido ASSINADO, então ela já foi validada pelo SDK contra
+    os redirect_uris que o cliente registrou: não é um valor que quem monta a
+    URL escolhe.
     """
+    destinos = "'self'" + (f" {retorno}" if retorno else "")
     return {
         "Cache-Control": "no-store, no-cache, must-revalidate, private",
         "Pragma": "no-cache",
@@ -81,7 +108,7 @@ def _sem_cache(nonce: str) -> dict[str, str]:
             f"script-src 'nonce-{nonce}'; "
             "style-src 'unsafe-inline'; "
             "img-src data:; "
-            "form-action 'self'; "
+            f"form-action {destinos}; "
             "base-uri 'none'; "
             "frame-ancestors 'none'"
         ),
@@ -107,7 +134,7 @@ def montar_rotas(provider, cfg, freio: Freio | None = None) -> list[Route]:
                 cliente=pedido.get("nome_cliente") or None,
                 nonce=nonce_csp,
             ),
-            headers=_sem_cache(nonce_csp),
+            headers=_sem_cache(nonce_csp, _origem(pedido.get("redirect_uri", ""))),
         )
         # Dupla submissão: o mesmo valor no cookie e no formulário. Impede que
         # um site de terceiro poste este formulário com credencial que ele
@@ -144,7 +171,8 @@ def montar_rotas(provider, cfg, freio: Freio | None = None) -> list[Route]:
                     cliente=cliente, erro=mensagem, usuario=usuario,
                     nonce=nonce_csp,
                 ),
-                status_code=status, headers=_sem_cache(nonce_csp),
+                status_code=status,
+                headers=_sem_cache(nonce_csp, _origem(pedido.get("redirect_uri", ""))),
             )
 
         veredito = freio.checar(usuario, ip)
@@ -178,8 +206,9 @@ def montar_rotas(provider, cfg, freio: Freio | None = None) -> list[Route]:
         LOG.info("login aceito", extra={"usuario": identidade.uid, "ip": ip,
                                         "client_id": pedido.get("client_id")})
         destino = provider.emitir_codigo(pedido, identidade.uid)
-        resposta = RedirectResponse(destino, status_code=302,
-                                    headers=_sem_cache(secrets.token_urlsafe(16)))
+        resposta = RedirectResponse(
+            destino, status_code=302,
+            headers=_sem_cache(secrets.token_urlsafe(16), _origem(destino)))
         resposta.delete_cookie(COOKIE_CSRF, path="/login")
         return resposta
 

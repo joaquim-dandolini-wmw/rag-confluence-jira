@@ -220,3 +220,41 @@ def test_tela_traz_a_logo_embutida() -> None:
     html = pagina.render(campos_ocultos={})
     assert "<svg" in html and "viewBox" in html
     assert "wmw.com.br" not in html
+
+
+# ------------------------------------------------------------------ CSP -----
+def test_origem_do_retorno() -> None:
+    from auth.login import _origem
+
+    assert _origem("https://claude.ai/api/mcp/auth_callback") == "https://claude.ai"
+    assert _origem("http://localhost:33418/cb") == "http://localhost:33418"
+    # Nada que não seja http(s) com host entra num cabeçalho de CSP.
+    assert _origem("javascript:alert(1)") is None
+    assert _origem("nao-e-url") is None
+    assert _origem("") is None
+
+
+def test_form_action_inclui_a_origem_de_retorno() -> None:
+    """O WebKit aplica form-action ao destino do REDIRECIONAMENTO pós-POST.
+
+    Com 'self' sozinho o login dava certo no servidor e o Safari bloqueava a
+    volta para o cliente, deixando a pessoa num laço de entrar sem retornar.
+    """
+    from auth.login import _sem_cache
+
+    csp = _sem_cache("n1", "https://claude.ai")["Content-Security-Policy"]
+    assert "form-action 'self' https://claude.ai;" in csp
+
+    sozinho = _sem_cache("n1")["Content-Security-Policy"]
+    assert "form-action 'self';" in sozinho
+
+
+def test_csp_continua_apertado_no_resto() -> None:
+    from auth.login import _sem_cache
+
+    csp = _sem_cache("n1", "https://claude.ai")["Content-Security-Policy"]
+    assert "default-src 'none'" in csp
+    assert "script-src 'nonce-n1'" in csp
+    assert "'unsafe-inline'" not in csp.split("script-src")[1].split(";")[0]
+    assert "frame-ancestors 'none'" in csp
+    assert "base-uri 'none'" in csp
