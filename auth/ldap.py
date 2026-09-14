@@ -110,10 +110,15 @@ def autenticar(cfg, usuario: str, senha: str) -> Identidade | None:
         return None
 
     try:
-        # Lê a própria entrada, já autenticado como a pessoa. Nenhuma conta de
-        # serviço é necessária para isto na maioria dos diretórios; se o seu
-        # não permitir, a busca volta vazia e o login é recusado por grupo — o
-        # log abaixo é o que diz que foi isso que aconteceu.
+        # Lê a própria entrada, já autenticado como a pessoa: nenhuma conta de
+        # serviço é necessária.
+        #
+        # O `memberOf` é pedido PELO NOME, e isso não é detalhe. Em vários
+        # diretórios — o lldap desta instalação entre eles — ele é atributo
+        # OPERACIONAL: não aparece quando se pede `*` (ALL_ATTRIBUTES), só
+        # quando é pedido explicitamente. Trocar esta lista por ALL_ATTRIBUTES
+        # "para simplificar" faz todo login passar no bind e ser recusado por
+        # grupo, sem erro nenhum que explique.
         achou = conexao.search(
             search_base=dn,
             search_scope="BASE",

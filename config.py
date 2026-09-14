@@ -391,6 +391,11 @@ class Config:
         return "Problemas encontrados:\n" + "\n".join(f"  - {e}" for e in self._errors)
 
 
+def _e_loopback(url: str) -> bool:
+    host = url.split("//", 1)[-1].split("/")[0].split(":")[0].lower()
+    return host in {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+
 def _primary_ipv4() -> str | None:
     """IP de saída desta máquina, sem enviar pacote nenhum.
 
@@ -560,10 +565,15 @@ def load_config(*, dotenv: bool = True) -> Config:
                 "https://wmw-rag.wmw.com.br): é o endereço que vai nos metadados "
                 "do OAuth e nos endereços de retorno do login."
             )
-        elif not publico.startswith("https://"):
+        elif not publico.startswith("https://") and not _e_loopback(publico):
+            # A exceção do loopback é a mesma do OAuth 2.1: em http://localhost
+            # o tráfego não sai da máquina, e é assim que se testa o fluxo antes
+            # de publicar. Fora do loopback, http significa código e token
+            # viajando em claro na URL de retorno.
             errors.append(
                 f"MCP_PUBLIC_URL={publico!r} não é https. O OAuth carrega código "
-                "e token na URL de retorno; em http eles viajam em claro."
+                "e token na URL de retorno; em http eles viajam em claro. Só "
+                "http://localhost é aceito, para teste."
             )
 
     auth = AuthConfig(
