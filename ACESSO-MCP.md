@@ -1,6 +1,10 @@
 # Conectar a busca ao seu cliente de IA
 
-Servidor: **`http://10.2.1.132:8765/mcp`** — rede interna, sem senha, sem chave.
+Servidor: **`https://wmw-rag.wmw.com.br/`** — sem senha, sem chave.
+
+> Endereco novo. O antigo `http://10.2.1.132:8765/mcp` **nao responde mais**:
+> mudou o IP da maquina, entrou HTTPS e o endpoint passou para a raiz.
+> Quem configurou antes precisa refazer.
 
 Quatro ferramentas no chat: buscar conteúdo no Jira e no Confluence por assunto
 ou por significado, consultar JQL ao vivo, abrir uma issue e ler uma página
@@ -11,7 +15,7 @@ inteira. Todo resultado traz o link da origem.
 ## Antes de tudo: você alcança o servidor?
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" http://10.2.1.132:8765/mcp
+curl -s -o /dev/null -w "%{http_code}\n" https://wmw-rag.wmw.com.br/
 ```
 
 **`400` é a resposta certa** — significa que chegou lá (o `curl` não fala MCP).
@@ -25,7 +29,7 @@ caso pare aqui, configurar o cliente não vai adiantar.
 Um comando, em qualquer sistema, sem instalar nada:
 
 ```bash
-claude mcp add -s user --transport http atlassian-kb http://10.2.1.132:8765/mcp
+claude mcp add -s user --transport http atlassian-kb https://wmw-rag.wmw.com.br/
 claude mcp list      # atlassian-kb: ... - ✔ Connected
 ```
 
@@ -33,10 +37,22 @@ Pronto. O resto deste documento é só para quem usa o **aplicativo** Claude Des
 
 ---
 
-## Claude Desktop
+## Claude Desktop — direto, sem instalar nada
 
-O aplicativo não conecta direto num servidor da rede interna (ver "O que não
-funciona" no fim). Usa-se uma ponte local, que precisa de **Node.js**.
+Agora que o servidor tem nome publico e certificado valido, o aplicativo conecta
+sozinho, **sem Node.js e sem editar arquivo**:
+
+**+** ao lado da caixa de mensagem -> **Connectors** -> **Add custom connector**
+-> cole `https://wmw-rag.wmw.com.br/` -> **Add**.
+
+Tem que aparecer `atlassian-kb` com quatro ferramentas. Se aparecer, acabou —
+pule o resto desta secao, que so serve de reserva.
+
+---
+
+## Claude Desktop — pela ponte local (reserva)
+
+So se o passo acima falhar. Usa uma ponte local, que precisa de **Node.js**.
 
 ### Passo 1 — Node.js
 
@@ -80,7 +96,7 @@ try: cfg = json.loads(p.read_text())
 except Exception: cfg = {}
 cfg["mcpServers"] = {"atlassian-kb": {
     "command": "npx",
-    "args": ["-y", "mcp-remote", "http://10.2.1.132:8765/mcp", "--allow-http"]}}
+    "args": ["-y", "mcp-remote", "https://wmw-rag.wmw.com.br/"]}}
 p.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")
 print("ok:", list(cfg))
 PY
@@ -92,7 +108,7 @@ PY
 cd $env:APPDATA\Claude
 $f = "claude_desktop_config.json"
 $cfg = if (Test-Path $f) { Get-Content $f -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
-$srv = @{ "atlassian-kb" = @{ command = "npx"; args = @("-y","mcp-remote","http://10.2.1.132:8765/mcp","--allow-http") } }
+$srv = @{ "atlassian-kb" = @{ command = "npx"; args = @("-y","mcp-remote","https://wmw-rag.wmw.com.br/") } }
 $cfg | Add-Member -Name mcpServers -Value $srv -MemberType NoteProperty -Force
 $cfg | ConvertTo-Json -Depth 10 | Set-Content $f -Encoding utf8
 Get-Content $f
@@ -160,10 +176,10 @@ python3 -m json.tool claude_desktop_config.json
 
 ## O que NÃO funciona
 
-**Connectors → Add custom connector.** A conexão parte dos servidores da
-Anthropic, não da sua máquina, e eles não alcançam um IP privado como
-`10.2.1.132`. Dá "Não foi possível alcançar". Não adianta trocar para `https`:
-o problema não é o protocolo.
+**~~Connectors → Add custom connector.~~** Isto **passou a funcionar** e agora e
+o caminho recomendado — ver a secao do Claude Desktop. Deixou de valer quando o
+servidor ganhou nome publico (`wmw-rag.wmw.com.br`) e certificado Let's Encrypt:
+antes o endereco era um IP privado que os servidores da Anthropic nao alcancavam.
 
 **O atalho do Chrome para o claude.ai.** Ele se chama "Claude" e parece o
 aplicativo, mas é uma janela de navegador e não lê configuração nenhuma.
@@ -180,8 +196,12 @@ O acesso é **aberto na rede interna, sem autenticação**:
 - **as permissões por espaço do Confluence não são aplicadas**: o índice foi
   construído por um usuário de serviço e a busca devolve o que ele via;
 - não há registro de quem perguntou o quê;
-- em compensação é **somente leitura**, e o firewall só aceita `10.0.0.0/8` e
-  `192.168.10.0/24` — nada vindo da internet.
+- é **somente leitura**.
 
-O `10.2.1.132` vem de DHCP: se mudar, **todos os clientes param juntos**. Vale
-reservar o IP antes de espalhar o endereço.
+**O que mudou com a publicação:** `wmw-rag.wmw.com.br` resolve na internet
+(`201.48.240.137`) e responde sem pedir credencial nenhuma. A restrição de
+firewall a `10.0.0.0/8` e `192.168.10.0/24` que valia antes **não protege mais
+este endereço**: hoje qualquer pessoa que saiba o nome lê o índice inteiro de
+fora da empresa, e o nome está público nos logs de Certificate Transparency do
+certificado. Enquanto não houver autenticação na frente do proxy, trate o
+conteúdo indexado como material publicado.
