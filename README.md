@@ -1,4 +1,4 @@
-<h1 align="center">atlassian-kb</h1>
+<h1 align="center">wmw-mcp-interno</h1>
 
 <p align="center">
   Pergunte em português para o Jira e o Confluence da WMW,<br>
@@ -48,7 +48,7 @@ autenticação no automático — todo cliente moderno descobre o OAuth sozinho.
 **Claude Code**
 
 ```bash
-claude mcp add --transport http --scope user atlassian-kb https://wmw-rag.wmw.com.br/
+claude mcp add --transport http --scope user wmw-mcp-interno https://wmw-rag.wmw.com.br/
 ```
 
 **Claude Desktop**
@@ -59,7 +59,7 @@ cole a URL → **Add**.
 **ChatGPT** (plano pago)
 
 **Settings** → **Apps & Connectors** → **Advanced settings** → ligue
-**Developer mode**. Volte e clique em **Create**: nome `atlassian-kb`, a URL
+**Developer mode**. Volte e clique em **Create**: nome `wmw-mcp-interno`, a URL
 acima, autenticação **OAuth**.
 
 <details>
@@ -77,31 +77,31 @@ computador, então funciona também fora da rede da empresa.
 **Codex CLI**
 
 ```bash
-codex mcp add atlassian-kb --url https://wmw-rag.wmw.com.br/
+codex mcp add wmw-mcp-interno --url https://wmw-rag.wmw.com.br/
 ```
 
 **Cursor** — `~/.cursor/mcp.json` (ou `.cursor/mcp.json` no projeto):
 
 ```json
-{ "mcpServers": { "atlassian-kb": { "url": "https://wmw-rag.wmw.com.br/" } } }
+{ "mcpServers": { "wmw-mcp-interno": { "url": "https://wmw-rag.wmw.com.br/" } } }
 ```
 
 **VS Code (GitHub Copilot)**
 
 ```bash
-code --add-mcp '{"name":"atlassian-kb","type":"http","url":"https://wmw-rag.wmw.com.br/"}'
+code --add-mcp '{"name":"wmw-mcp-interno","type":"http","url":"https://wmw-rag.wmw.com.br/"}'
 ```
 
 **Gemini CLI**
 
 ```bash
-gemini mcp add --transport http atlassian-kb https://wmw-rag.wmw.com.br/
+gemini mcp add --transport http wmw-mcp-interno https://wmw-rag.wmw.com.br/
 ```
 
 **Windsurf** — `~/.codeium/windsurf/mcp_config.json`:
 
 ```json
-{ "mcpServers": { "atlassian-kb": { "serverUrl": "https://wmw-rag.wmw.com.br/" } } }
+{ "mcpServers": { "wmw-mcp-interno": { "serverUrl": "https://wmw-rag.wmw.com.br/" } } }
 ```
 
 **Qualquer outro** — o que muda de um para outro é só o nome da chave que

@@ -32,7 +32,7 @@ MAX_JQL_RESULTS = 100
 MAX_PAGE_CHARS = 200_000
 
 server = MCPServer(
-    name="atlassian-kb",
+    name="wmw-mcp-interno",
     instructions=(
         "Busca sobre um Jira 8.14 e um Confluence 4.2.4 internos. "
         "Use search_knowledge_base para encontrar conteúdo por assunto ou por "
