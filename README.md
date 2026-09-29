@@ -274,7 +274,7 @@ Quem entrou aparece no painel de operação, na aba **Logins**.
 Dois ciclos independentes, que se comunicam **apenas pelo índice**.
 
 ```
-CICLO 1 — indexação (offline, janela noturna)
+CICLO 1 — indexação (offline: Jira a cada 30 min, Confluence à noite)
 
    Jira 8.14                Confluence 4.2.4
    REST v2 + PAT            XML-RPC /rpc/xmlrpc
@@ -302,7 +302,8 @@ Gravando o texto limpo num SQLite local, reconstruir o índice do zero vira
 operação de minutos que **não toca em nenhuma instância Atlassian**.
 
 **Índice e ao vivo são separados de propósito.** O índice responde conteúdo e
-significado, com o atraso da última janela noturna. Contagem e ordenação
+significado, com o atraso da última rodada (até ~35 min no Jira, um dia no
+Confluence). Contagem e ordenação
 **nunca** saem dele: essas respostas precisam estar corretas agora, não
 aproximadamente.
 
@@ -507,15 +508,26 @@ salvar o agendamento, e por isso o padrão é escutar só em `127.0.0.1`; para
 atender a rede é obrigatório definir `PANEL_PASSWORD`, sem a qual ele se recusa
 a subir.
 
-**A janela de meia-noite** — uma rodada por dia, até acabar:
+**A agenda** — cada fonte no seu ritmo, configurada no painel (aba Agenda):
+
+| fonte | quando (padrão) | por quê |
+|---|---|---|
+| Confluence | uma vez por dia, 00:00 | o 4.2.4 não diz o que mudou: cada rodada varre todas as páginas, ~2 h |
+| Jira | a cada 30 min, das 7h às 20h | incremental pelo `updated`: segundos, mais o embed do que mudou |
+
+Os horários da tela são de Brasília; o painel converte para o relógio do
+servidor (UTC). Cada opção tem um **i** explicando o que faz e quanto custa.
 
 ```bash
-crontab deploy/crontab.example
+crontab deploy/crontab.example     # variáveis do cron + bloco padrão do painel
 sudo install -m 644 -o root -g root deploy/logrotate.rag /etc/logrotate.d/rag
 ```
 
-O `flock -n` garante uma rodada por vez: se uma noite atrasar e passar da
-meia-noite seguinte, a nova desiste em vez de duas disputarem o mesmo SQLite.
+As duas fontes dividem um `flock`, porque escrevem no mesmo SQLite. O Jira
+desiste se o lock estiver ocupado (`-n`: a próxima rodada busca desde o
+cursor, nada se perde); o Confluence espera até 30 min (`-w`), para uma rodada
+do Jira não custar a noite. O Jira loga em `logs/jira.log`, o Confluence em
+`logs/noturno.log`.
 
 </details>
 
