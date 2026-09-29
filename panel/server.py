@@ -177,6 +177,10 @@ def estado(request: Request) -> JSONResponse:
                 "delecoes_na_fila": len(store.get_state("pending_index_deletions", []) or []),
             }
             dados["ultima_rodada"] = store.get_state("last_run")
+            dados["rodadas"] = {
+                escopo: r for escopo in ("confluence", "jira", "todas")
+                if (r := store.get_state(f"last_run_{escopo}"))
+            }
     except Exception as exc:  # noqa: BLE001 - painel nunca deve cair por isso
         dados["store"] = {"erro": str(exc)}
 

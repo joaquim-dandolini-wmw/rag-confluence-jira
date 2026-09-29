@@ -52,7 +52,8 @@
   .rodape-lateral div { margin-top: 4px; }
 
   /* ---- conteúdo ---- */
-  main { padding: 26px 30px 60px; max-width: 1080px; }
+  /* min-width: 0 deixa o crontab rolar dentro do bloco em vez de alargar a página. */
+  main { padding: 26px 30px 60px; max-width: 1080px; min-width: 0; }
   h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.3px; }
   .sub { color: var(--fraco); margin: 0 0 22px; font-size: 13px; }
   section[hidden] { display: none; }
@@ -89,6 +90,29 @@
   }
   .linha { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-end; }
   .caixa { display: flex; align-items: center; gap: 7px; font-size: 13.5px; }
+
+  /* ---- botão de informação e o texto que ele abre ---- */
+  button.info {
+    all: unset; cursor: pointer; width: 17px; height: 17px; border-radius: 50%;
+    border: 1px solid var(--borda); color: var(--fraco); font: 600 11px/15px Georgia, serif;
+    text-align: center; flex: none; font-style: italic;
+  }
+  button.info:hover, button.info[aria-expanded="true"] { color: var(--acento); border-color: var(--acento); }
+  button.info:focus-visible { outline: 2px solid var(--acento); outline-offset: 2px; }
+  .ajuda {
+    margin: 8px 0 0; padding: 9px 12px; border-left: 3px solid var(--acento);
+    background: var(--codigo-bg); border-radius: 0 7px 7px 0;
+    font-size: 12.5px; color: var(--texto); max-width: 720px;
+  }
+  .ajuda[hidden] { display: none; }
+  .ajuda b { font-weight: 620; }
+  .opcao { display: flex; flex-direction: column; }
+  .opcao > .topo { display: flex; align-items: center; gap: 7px; }
+  .grade-ag { display: grid; gap: 16px; }
+  .rotulo-info { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+  .rotulo-info label.campo { margin: 0; }
+  .fraco { color: var(--fraco); font-size: 12.5px; }
+  h2 .fonte { font-weight: 500; color: var(--fraco); font-size: 12.5px; margin-left: 6px; }
 
   pre.cron {
     background: var(--codigo-bg); border: 1px solid var(--borda); border-radius: 8px;
@@ -172,7 +196,7 @@
       <p class="sub">Estado do store, do índice e da última rodada.</p>
       <div class="cartoes" id="cartoes"></div>
       <div class="bloco">
-        <header><h2>Última rodada</h2><span id="selo-rodada" class="selo">—</span></header>
+        <header><h2>Últimas rodadas</h2><span id="selo-rodada" class="selo">—</span></header>
         <div class="corpo" id="rodada"><div class="vazio">carregando…</div></div>
       </div>
       <div class="bloco">
@@ -296,33 +320,124 @@
     <!-- ============ AGENDA ============ -->
     <section id="v-agenda" hidden>
       <h1>Agenda</h1>
-      <p class="sub">Uma janela por dia. Salvar reescreve <span class="mono">apenas</span> o bloco do painel no crontab do usuário.</p>
+      <p class="sub">Cada fonte tem o seu ritmo. Horários em Brasília. Salvar reescreve <span class="mono">apenas</span> o bloco do painel no crontab do usuário.
+        <button class="info" type="button" aria-controls="h-geral" aria-expanded="false" aria-label="Como a agenda funciona">i</button></p>
+      <p class="ajuda" id="h-geral" hidden>
+        O <b>Confluence</b> e o <b>Jira</b> rodam separados porque custam muito diferente. O Confluence 4.2.4 não informa
+        o que mudou, então cada rodada relê todas as páginas — perto de 2 horas. O Jira é incremental: busca só o que mudou
+        desde a última rodada, em segundos. As duas fontes nunca rodam ao mesmo tempo (escrevem no mesmo banco): se o Jira
+        estiver no meio quando o Confluence for começar, o Confluence <b>espera até 30 min</b>; se o Confluence estiver
+        rodando na hora de uma rodada do Jira, o Jira <b>pula a vez</b> — e não perde nada, porque a próxima busca tudo
+        desde a última que rodou.
+      </p>
+
       <div class="bloco">
-        <header><h2>Quando rodar</h2><span class="selo" id="selo-agenda">—</span></header>
-        <div class="corpo">
-          <div class="linha">
-            <div>
-              <label class="campo" for="ag-hora">Horário</label>
-              <input type="time" id="ag-hora" value="00:00" step="60">
+        <header><h2>Confluence <span class="fonte">uma vez por dia</span></h2><span class="selo" id="selo-conf">—</span></header>
+        <div class="corpo grade-ag">
+          <div class="opcao">
+            <div class="topo">
+              <label class="caixa"><input type="checkbox" id="c-ativo" checked> ativo</label>
+              <button class="info" type="button" aria-controls="h-c-ativo" aria-expanded="false" aria-label="O que é ativo">i</button>
             </div>
-            <div>
-              <label class="campo">Fontes</label>
-              <div class="linha" style="gap:14px">
-                <label class="caixa"><input type="checkbox" id="ag-conf" checked> Confluence</label>
-                <label class="caixa"><input type="checkbox" id="ag-jira" checked> Jira</label>
-              </div>
+            <p class="ajuda" id="h-c-ativo" hidden>Desligado, a linha continua no crontab, só que comentada: nada do Confluence é
+              atualizado até você ligar de novo. O que já está indexado continua disponível para busca.</p>
+          </div>
+          <div class="opcao">
+            <div class="rotulo-info">
+              <label class="campo" for="c-hora">Horário</label>
+              <button class="info" type="button" aria-controls="h-c-hora" aria-expanded="false" aria-label="O que é o horário">i</button>
             </div>
+            <input type="time" id="c-hora" value="00:00" step="60" style="width:max-content">
+            <p class="ajuda" id="h-c-hora" hidden>Hora em que a rodada começa, no horário de Brasília (o painel converte para o relógio do servidor, que está em UTC). Ela leva perto de 2 horas
+              (varre as ~40 mil páginas dos 716 espaços) e depois calcula os vetores do que mudou. Escolha um horário em que
+              ninguém dependa de conteúdo recém-editado: o que mudar no Confluence durante o dia só aparece na busca depois da
+              próxima rodada.</p>
           </div>
-          <div class="linha" style="margin-top:16px">
-            <label class="caixa"><input type="checkbox" id="ag-anexos"> contar anexos <span class="selo">+1 chamada por página</span></label>
-            <label class="caixa"><input type="checkbox" id="ag-rec" checked> reconciliar deleções do Jira no domingo</label>
-            <label class="caixa"><input type="checkbox" id="ag-ativo" checked> agendamento ativo</label>
-          </div>
-          <div class="linha" style="margin-top:18px">
-            <button class="acao" id="ag-salvar">Salvar e aplicar no crontab</button>
-            <span id="ag-msg" class="selo" hidden></span>
+          <div class="opcao">
+            <div class="topo">
+              <label class="caixa"><input type="checkbox" id="c-anexos"> contar anexos <span class="selo">+1 chamada por página</span></label>
+              <button class="info" type="button" aria-controls="h-c-anexos" aria-expanded="false" aria-label="O que é contar anexos">i</button>
+            </div>
+            <p class="ajuda" id="h-c-anexos" hidden>Pergunta ao Confluence quantos anexos cada página tem e guarda esse número. O
+              conteúdo dos anexos <b>não</b> é indexado de nenhum jeito — é só a contagem. Custa uma chamada a mais por página,
+              ou seja, ~40 mil chamadas a mais por noite; na prática, perto de uma hora e meia a mais de rodada. Deixe desligado a não
+              ser que precise do número.</p>
           </div>
         </div>
+      </div>
+
+      <div class="bloco">
+        <header><h2>Jira <span class="fonte">ao longo do dia</span></h2><span class="selo" id="selo-jira">—</span></header>
+        <div class="corpo grade-ag">
+          <div class="opcao">
+            <div class="topo">
+              <label class="caixa"><input type="checkbox" id="j-ativo" checked> ativo</label>
+              <button class="info" type="button" aria-controls="h-j-ativo" aria-expanded="false" aria-label="O que é ativo">i</button>
+            </div>
+            <p class="ajuda" id="h-j-ativo" hidden>Desligado, o Jira para de ser atualizado — inclusive a reconciliação de domingo.
+              Ao religar, a primeira rodada busca tudo que mudou no período, então nada se perde.</p>
+          </div>
+          <div class="linha">
+            <div class="opcao">
+              <div class="rotulo-info">
+                <label class="campo" for="j-intervalo">A cada</label>
+                <button class="info" type="button" aria-controls="h-j-intervalo" aria-expanded="false" aria-label="O que é o intervalo">i</button>
+              </div>
+              <select id="j-intervalo">
+                <option value="15">15 minutos</option>
+                <option value="30" selected>30 minutos</option>
+                <option value="60">1 hora</option>
+                <option value="120">2 horas</option>
+              </select>
+            </div>
+            <div class="opcao">
+              <div class="rotulo-info">
+                <label class="campo" for="j-inicio">Das</label>
+                <button class="info" type="button" aria-controls="h-j-janela" aria-expanded="false" aria-label="O que é a janela de horário">i</button>
+              </div>
+              <select id="j-inicio"></select>
+            </div>
+            <div class="opcao">
+              <label class="campo" for="j-fim">Até</label>
+              <select id="j-fim"></select>
+            </div>
+            <div class="opcao">
+              <div class="rotulo-info">
+                <label class="campo" for="j-dias">Dias</label>
+                <button class="info" type="button" aria-controls="h-j-dias" aria-expanded="false" aria-label="O que são os dias">i</button>
+              </div>
+              <select id="j-dias">
+                <option value="todos">todos os dias</option>
+                <option value="uteis">segunda a sexta</option>
+              </select>
+            </div>
+          </div>
+          <p class="ajuda" id="h-j-intervalo" hidden>De quanto em quanto tempo o Jira é consultado. Cada rodada busca só as issues
+            alteradas desde a anterior (segundos) e depois calcula os vetores delas, que é a parte lenta: hoje o cálculo roda em
+            CPU, a uns 10 segundos por issue. Com 30 min, uma issue editada aparece na busca em até ~35 min. 15 min deixa mais
+            fresco, mas se muita coisa mudar de uma vez a rodada pode não terminar antes da próxima — nesse caso a próxima
+            simplesmente pula, sem perder nada.</p>
+          <p class="ajuda" id="h-j-janela" hidden>Faixa de horário em que as rodadas acontecem. A última rodada é a que começa antes
+            do "até" (das 07h até 20h a cada 30 min: 07:00, 07:30 … 19:30). Fora da faixa nada roda, e a primeira rodada do dia
+            seguinte recupera tudo o que mudou durante a noite. Escolha "00h até 24h" para rodar o dia inteiro.</p>
+          <p class="ajuda" id="h-j-dias" hidden>"Segunda a sexta" deixa o fim de semana sem rodadas; o que mudar no sábado e no
+            domingo entra na primeira rodada de segunda.</p>
+          <div class="opcao">
+            <div class="topo">
+              <label class="caixa"><input type="checkbox" id="j-rec" checked> reconciliar deleções no domingo</label>
+              <button class="info" type="button" aria-controls="h-j-rec" aria-expanded="false" aria-label="O que é reconciliar deleções">i</button>
+            </div>
+            <p class="ajuda" id="h-j-rec" hidden>A rodada incremental só enxerga o que foi <b>alterado</b>: uma issue apagada ou
+              movida para outro projeto simplesmente some, e continuaria aparecendo na busca. Uma vez por semana, no domingo no
+              horário do Confluence, esta etapa lista todas as chaves que existem no Jira e remove do índice as que não existem
+              mais. Com o Confluence ativo, ela roda logo depois da rodada dele.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="linha" style="margin:0 0 18px">
+        <button class="acao" id="ag-salvar">Salvar e aplicar no crontab</button>
+        <span id="ag-msg" class="selo" hidden></span>
       </div>
       <div class="bloco">
         <header><h2>O que vai para o crontab</h2></header>
@@ -379,21 +494,28 @@ async function carregarEstado() {
     + cartao("pendentes", num(pend), `índice ${num(st.pendentes_index)} · denso ${num(st.pendentes_denso)}`)
     + cartao("espaços versionados", num(st.versoes_confluence), `cursor Jira ${st.cursor_jira ? esc(st.cursor_jira).slice(0, 16) : "—"}`);
 
-  const r = d.ultima_rodada;
+  // Uma tabela por escopo: com o Jira rodando a cada meia hora, só a última
+  // rodada geral esconderia a noturna do Confluence.
+  const ROTULO = { confluence: "Confluence", jira: "Jira", todas: "as duas fontes" };
+  const porEscopo = Object.entries(d.rodadas || {});
+  const rodadas = porEscopo.length ? porEscopo : (d.ultima_rodada ? [["", d.ultima_rodada]] : []);
   const selo = $("#selo-rodada");
-  if (!r) { $("#rodada").innerHTML = '<div class="vazio">nenhuma rodada registrada</div>'; selo.textContent = "—"; selo.className = "selo"; }
+  if (!rodadas.length) { $("#rodada").innerHTML = '<div class="vazio">nenhuma rodada registrada</div>'; selo.textContent = "—"; selo.className = "selo"; }
   else {
-    const falhas = Object.values(r).reduce((a, v) => a + ((v && typeof v === "object" && v.falhas) || 0), 0);
+    let falhas = 0, html = "<table>";
+    for (const [escopo, r] of rodadas) {
+      falhas += Object.values(r).reduce((a, v) => a + ((v && typeof v === "object" && v.falhas) || 0), 0);
+      if (escopo) html += `<tr><th colspan="2" style="padding-top:12px">${esc(ROTULO[escopo] || escopo)}</th></tr>`;
+      if (r.em) html += `<tr><td class="rot">quando</td><td class="mono">${esc(horaLocal(r.em))}</td></tr>`;
+      for (const [etapa, v] of Object.entries(r)) {
+        if (etapa === "em" || !v || typeof v !== "object") continue;
+        const campos = Object.entries(v).map(([k, val]) =>
+          `<b>${esc(k)}</b> ${esc(typeof val === "number" ? num(val) : val)}`).join(" · ");
+        html += `<tr><td class="rot">${esc(etapa)}</td><td class="x" style="font-size:12.5px">${campos}</td></tr>`;
+      }
+    }
     selo.textContent = falhas ? `${falhas} falha(s)` : "sem falhas";
     selo.className = "selo " + (falhas ? "erro" : "ok");
-    let html = "<table>";
-    if (r.em) html += `<tr><td class="rot">quando</td><td class="mono">${esc(r.em)}</td></tr>`;
-    for (const [etapa, v] of Object.entries(r)) {
-      if (etapa === "em" || !v || typeof v !== "object") continue;
-      const campos = Object.entries(v).map(([k, val]) =>
-        `<b>${esc(k)}</b> ${esc(typeof val === "number" ? num(val) : val)}`).join(" · ");
-      html += `<tr><td class="rot">${esc(etapa)}</td><td class="x" style="font-size:12.5px">${campos}</td></tr>`;
-    }
     $("#rodada").innerHTML = html + "</table>";
   }
 
@@ -654,31 +776,61 @@ async function carregarLogins() {
     </table>` : '<div class="vazio">nenhum aplicativo registrado</div>';
 }
 
+const HORAS = (de, ate) => Array.from({ length: ate - de + 1 }, (_, i) => de + i);
+$("#j-inicio").innerHTML = HORAS(0, 23).map(h => `<option value="${h}">${String(h).padStart(2, "0")}h</option>`).join("");
+$("#j-fim").innerHTML = HORAS(1, 24).map(h => `<option value="${h}">${String(h).padStart(2, "0")}h</option>`).join("");
+
+// Cada "i" abre e fecha o texto que ele controla.
+document.addEventListener("click", (ev) => {
+  const b = ev.target.closest("button.info");
+  if (!b) return;
+  const alvo = document.getElementById(b.getAttribute("aria-controls"));
+  const abrir = alvo.hidden;
+  alvo.hidden = !abrir;
+  b.setAttribute("aria-expanded", String(abrir));
+});
+
+const INTERVALO = { 15: "a cada 15 min", 30: "a cada 30 min", 60: "de hora em hora", 120: "a cada 2 h" };
+
 async function carregarAgenda() {
   const d = await (await fetch("/api/agenda")).json();
-  const a = d.agenda;
-  $("#ag-hora").value = a.hora;
-  $("#ag-conf").checked = a.fontes.includes("confluence");
-  $("#ag-jira").checked = a.fontes.includes("jira");
-  $("#ag-anexos").checked = a.contar_anexos;
-  $("#ag-rec").checked = a.reconcile_domingo;
-  $("#ag-ativo").checked = a.ativo;
+  const c = d.agenda.confluence, j = d.agenda.jira;
+  $("#c-ativo").checked = c.ativo;
+  $("#c-hora").value = c.hora;
+  $("#c-anexos").checked = c.contar_anexos;
+  $("#j-ativo").checked = j.ativo;
+  $("#j-intervalo").value = String(j.intervalo_min);
+  $("#j-inicio").value = String(j.inicio);
+  $("#j-fim").value = String(j.fim);
+  $("#j-dias").value = j.dias;
+  $("#j-rec").checked = j.reconcile_domingo;
   $("#ag-previsto").textContent = d.previsto;
   $("#ag-noar").textContent = d.no_ar || "(o crontab não tem bloco do painel)";
-  const s = $("#selo-agenda");
-  s.textContent = d.crontab_tem_bloco ? (a.ativo ? "no ar às " + a.hora : "bloco presente, desativado") : "não aplicado";
-  s.className = "selo " + (d.crontab_tem_bloco && a.ativo ? "ok" : "alerta");
+
+  const no_ar = d.crontab_tem_bloco;
+  const selo = (el, ativo, texto) => {
+    el.textContent = !no_ar ? "não aplicado" : (ativo ? texto : "desativado");
+    el.className = "selo " + (no_ar && ativo ? "ok" : "alerta");
+  };
+  selo($("#selo-conf"), c.ativo, "no ar às " + c.hora);
+  selo($("#selo-jira"), j.ativo, `${INTERVALO[j.intervalo_min] || j.intervalo_min + " min"}, ${String(j.inicio).padStart(2, "0")}h–${String(j.fim).padStart(2, "0")}h`);
 }
 
 function agendaDoFormulario() {
-  const fontes = [];
-  if ($("#ag-conf").checked) fontes.push("confluence");
-  if ($("#ag-jira").checked) fontes.push("jira");
   return {
-    hora: $("#ag-hora").value, fontes,
-    contar_anexos: $("#ag-anexos").checked,
-    reconcile_domingo: $("#ag-rec").checked,
-    ativo: $("#ag-ativo").checked,
+    confluence: {
+      ativo: $("#c-ativo").checked,
+      hora: $("#c-hora").value,
+      contar_anexos: $("#c-anexos").checked,
+    },
+    jira: {
+      ativo: $("#j-ativo").checked,
+      intervalo_min: Number($("#j-intervalo").value),
+      inicio: Number($("#j-inicio").value),
+      fim: Number($("#j-fim").value),
+      dias: $("#j-dias").value,
+      reconcile_domingo: $("#j-rec").checked,
+    },
   };
 }
 

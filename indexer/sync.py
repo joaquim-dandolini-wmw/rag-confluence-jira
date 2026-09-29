@@ -928,6 +928,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             if report:
                 report["em"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 store.set_state("last_run", report)
+                if args.command == "run":
+                    # Uma por escopo, além da última geral: com o Jira rodando
+                    # a cada meia hora, a rodada noturna do Confluence sumiria
+                    # do painel na primeira rodada do Jira da manhã.
+                    store.set_state(f"last_run_{args.only or 'todas'}", report)
                 store.commit()
     except (
         ConfigError,

@@ -22,68 +22,157 @@ REPO = Path("/srv/rag")
 # validação do que vem da tela
 # --------------------------------------------------------------------------
 
+def _bloco(payload: dict | None = None, desloc: int = 0) -> str:
+    return sched.render_block(sched.parse(payload or {}), REPO, desloc)
+
+
+def _jobs(bloco: str) -> list[str]:
+    return [l for l in bloco.splitlines() if l and not l.startswith("#")]
+
+
 def test_hora_invalida_e_recusada() -> None:
     for ruim in ("24:00", "9:5", "meia-noite", "00:60", ""):
         with pytest.raises(sched.ScheduleError):
-            sched.parse({"hora": ruim})
+            sched.parse({"confluence": {"hora": ruim}})
 
 
-def test_sem_fonte_nenhuma_e_recusado() -> None:
+def test_intervalo_do_jira_so_aceita_os_da_tela() -> None:
+    for ruim in (0, 7, 45, "abc", None):
+        with pytest.raises(sched.ScheduleError):
+            sched.parse({"jira": {"intervalo_min": ruim}})
+    assert sched.parse({"jira": {"intervalo_min": "15"}}).jira.intervalo_min == 15
+
+
+def test_janela_do_jira_precisa_de_inicio_antes_do_fim() -> None:
+    for inicio, fim in ((20, 7), (8, 8), (-1, 5), (0, 25)):
+        with pytest.raises(sched.ScheduleError):
+            sched.parse({"jira": {"inicio": inicio, "fim": fim}})
+
+
+def test_dias_do_jira_desconhecidos_sao_recusados() -> None:
     with pytest.raises(sched.ScheduleError):
-        sched.parse({"hora": "00:00", "fontes": []})
+        sched.parse({"jira": {"dias": "feriados"}})
 
 
-def test_fonte_desconhecida_e_ignorada_sem_derrubar() -> None:
-    agenda = sched.parse({"hora": "00:00", "fontes": ["jira", "sharepoint"]})
-    assert agenda.fontes == ("jira",)
+def test_padrao_e_confluence_a_meia_noite_e_jira_a_cada_30_min() -> None:
+    agenda = sched.parse({})
+    assert agenda.confluence.hora == "00:00" and agenda.confluence.ativo
+    assert agenda.jira.intervalo_min == 30 and agenda.jira.ativo
+    assert (agenda.jira.inicio, agenda.jira.fim) == (7, 20)
 
 
-def test_ordem_das_fontes_e_canonica() -> None:
-    """A ordem não vem da tela: confluence primeiro, como o extract faz."""
-    agenda = sched.parse({"hora": "00:00", "fontes": ["jira", "confluence"]})
-    assert agenda.fontes == ("confluence", "jira")
+def test_agenda_do_formato_antigo_continua_valendo() -> None:
+    """O agenda.json de antes era uma janela só; ele não pode derrubar o painel."""
+    antiga = sched.parse({"hora": "01:15", "fontes": ["confluence"], "contar_anexos": True,
+                          "reconcile_domingo": False, "ativo": True})
+    assert antiga.confluence == sched.Confluence(ativo=True, hora="01:15", contar_anexos=True)
+    assert antiga.jira.ativo is False
+    assert antiga.jira.reconcile_domingo is False
+
+    desligada = sched.parse({"hora": "00:00", "fontes": ["confluence", "jira"], "ativo": False})
+    assert not desligada.confluence.ativo and not desligada.jira.ativo
 
 
 # --------------------------------------------------------------------------
 # o bloco do crontab
 # --------------------------------------------------------------------------
 
-def test_bloco_da_meia_noite_com_as_duas_fontes() -> None:
-    bloco = sched.render_block(sched.parse({"hora": "00:00"}), REPO)
-    linhas = [l for l in bloco.splitlines() if l and not l.startswith("#")]
-    assert len(linhas) == 2, "segunda a sábado + domingo"
-    assert linhas[0].startswith("0 0 * * 1-6")
-    assert linhas[1].startswith("0 0 * * 0")
-    # o run não leva --only: uma rodada só cobre as duas fontes
-    assert "run --only" not in bloco
-    assert "sync run --no-count-attachments" in linhas[0]
-    assert "flock -n /tmp/rag-sync.lock" in linhas[0]
-    assert "reconcile --only jira" in linhas[1]
-    # o reconcile é ENCADEADO, não agendado à parte
-    assert "&&" in linhas[1]
+def test_bloco_padrao_separa_as_fontes() -> None:
+    linhas = _jobs(_bloco())
+    assert len(linhas) == 3, "Confluence seg-sáb + Confluence de domingo + Jira"
+    conf, domingo, jira = linhas
+    assert conf.startswith("0 0 * * 1-6 ")
+    assert domingo.startswith("0 0 * * 0 ")
+    assert jira.startswith("*/30 7-19 * * * ")
+    assert "run --only confluence --no-count-attachments" in conf
+    assert "run --only jira" in jira
+    assert "logs/noturno.log" in conf and "logs/jira.log" in jira
 
 
-def test_hora_sem_zero_a_esquerda_no_cron() -> None:
-    bloco = sched.render_block(sched.parse({"hora": "03:05"}), REPO)
-    assert "5 3 * * " in bloco
+def test_confluence_espera_o_lock_e_jira_desiste() -> None:
+    """Jira que pula não perde nada; Confluence que pula perde a noite."""
+    conf, _, jira = _jobs(_bloco())
+    assert f"flock -w {sched.ESPERA_CONFLUENCE_S} /tmp/rag-sync.lock" in conf
+    assert "flock -n /tmp/rag-sync.lock" in jira
+    assert "flock -n" not in conf
 
 
-def test_uma_fonte_so_usa_only() -> None:
-    bloco = sched.render_block(sched.parse({"hora": "00:00", "fontes": ["confluence"]}), REPO)
-    assert "--only confluence" in bloco
-    # sem Jira no escopo não existe reconcile de Jira para encadear
-    assert "reconcile" not in bloco
-    assert len([l for l in bloco.splitlines() if l and not l.startswith("#")]) == 1
+def test_reconcile_vai_encadeado_depois_do_confluence_de_domingo() -> None:
+    _, domingo, jira = _jobs(_bloco())
+    assert "run --only confluence" in domingo and "reconcile --only jira" in domingo
+    assert domingo.index("run --only confluence") < domingo.index("reconcile --only jira")
+    # `;` e não `&&`: falha no Confluence não cancela a reconciliação do Jira
+    assert "--no-count-attachments; " in domingo
+    assert "reconcile" not in jira
+
+
+def test_sem_confluence_o_reconcile_roda_sozinho_no_domingo() -> None:
+    bloco = _bloco({"confluence": {"ativo": False, "hora": "02:00"}})
+    ativos = _jobs(bloco)
+    assert [l for l in ativos if "reconcile --only jira" in l][0].startswith("0 2 * * 0 ")
+    assert all("run --only confluence" not in l for l in ativos)
+    assert "# (desativado no painel) 0 2 * * * " in bloco
+
+
+def test_sem_reconcile_o_confluence_vira_uma_linha_so() -> None:
+    linhas = _jobs(_bloco({"jira": {"reconcile_domingo": False}}))
+    assert len(linhas) == 2
+    assert linhas[0].startswith("0 0 * * * ")
+    assert all("reconcile" not in l for l in linhas)
+
+
+def test_jira_desativado_leva_o_reconcile_junto() -> None:
+    bloco = _bloco({"jira": {"ativo": False}})
+    assert all("reconcile" not in l and "--only jira" not in l for l in _jobs(bloco))
+    assert "# (desativado no painel) */30 7-19 * * * " in bloco
+
+
+def test_intervalos_do_jira_viram_cron_conhecido() -> None:
+    def jira(**kw):
+        return [l for l in _jobs(_bloco({"jira": kw})) if "run --only jira" in l]
+    assert jira(intervalo_min=15)[0].startswith("*/15 7-19 * * * ")
+    assert jira(intervalo_min=60)[0].startswith("0 7-19 * * * ")
+    assert jira(intervalo_min=120)[0].startswith("0 7,9,11,13,15,17,19 * * * ")
+    assert jira(dias="uteis")[0].startswith("*/30 7-19 * * 1-5 ")
+    assert jira(inicio=0, fim=24)[0].startswith("*/30 0-23 * * * ")
+
+
+def test_horario_de_brasilia_vira_utc_no_servidor() -> None:
+    """Servidor em UTC, 3 h à frente: a tela diz 00:00, o cron diz 3."""
+    bloco = _bloco(desloc=3)
+    conf, domingo, jira = _jobs(bloco)
+    assert conf.startswith("0 3 * * 1-6 ")
+    assert domingo.startswith("0 3 * * 0 ")
+    assert jira.startswith("*/30 10-22 * * * ")
+    assert "o relógio do servidor está +3 h" in bloco
+
+
+def test_hora_que_atravessa_a_meia_noite_muda_o_dia_da_semana() -> None:
+    """22:30 de sábado em Brasília é 01:30 de domingo em UTC."""
+    conf, domingo, _ = _jobs(_bloco({"confluence": {"hora": "22:30"}}, desloc=3))
+    assert conf.startswith("30 1 * * 0,2-6 ")
+    assert domingo.startswith("30 1 * * 1 "), "o domingo de Brasília é segunda em UTC"
+
+    noite = [l for l in _jobs(_bloco({"jira": {"inicio": 18, "fim": 24, "dias": "uteis"}}, desloc=3))
+             if "run --only jira" in l]
+    assert noite[0].startswith("*/30 21-23 * * 1-5 ")
+    assert noite[1].startswith("*/30 0-2 * * 2-6 ")
+
+
+def test_faixas_compactam_a_lista() -> None:
+    assert sched._faixas([5, 0, 1, 2]) == "0-2,5"
+    assert sched._faixas([3]) == "3"
+    assert sched._faixas(range(24)) == "0-23"
 
 
 def test_contar_anexos_desligado_e_o_padrao() -> None:
-    assert "--no-count-attachments" in sched.render_block(sched.parse({"hora": "00:00"}), REPO)
-    ligado = sched.render_block(sched.parse({"hora": "00:00", "contar_anexos": True}), REPO)
+    assert "--no-count-attachments" in _bloco()
+    ligado = _bloco({"confluence": {"contar_anexos": True}})
     assert "--no-count-attachments" not in ligado
 
 
-def test_desativado_comenta_as_linhas_mas_mantem_o_bloco() -> None:
-    bloco = sched.render_block(sched.parse({"hora": "00:00", "ativo": False}), REPO)
+def test_tudo_desativado_comenta_todas_as_linhas_mas_mantem_o_bloco() -> None:
+    bloco = _bloco({"confluence": {"ativo": False}, "jira": {"ativo": False}})
     for linha in bloco.splitlines():
         assert linha.startswith("#"), linha
 
@@ -94,38 +183,38 @@ def test_desativado_comenta_as_linhas_mas_mantem_o_bloco() -> None:
 
 def test_merge_preserva_jobs_que_nao_sao_nossos() -> None:
     atual = "SHELL=/bin/bash\nMAILTO=\"\"\n*/5 * * * * backup-do-financeiro\n"
-    novo = sched.merge(atual, sched.render_block(sched.parse({"hora": "00:00"}), REPO))
+    novo = sched.merge(atual, _bloco())
     assert "backup-do-financeiro" in novo
     assert 'MAILTO=""' in novo
     assert novo.count(sched.BEGIN) == 1
 
 
 def test_merge_substitui_o_bloco_anterior_sem_duplicar() -> None:
-    atual = sched.merge("* * * * * outro\n", sched.render_block(sched.parse({"hora": "00:00"}), REPO))
-    novo = sched.merge(atual, sched.render_block(sched.parse({"hora": "23:30"}), REPO))
+    atual = sched.merge("* * * * * outro\n", _bloco())
+    novo = sched.merge(atual, _bloco({"confluence": {"hora": "23:30"}}))
     assert novo.count(sched.BEGIN) == 1
     assert novo.count(sched.END) == 1
     assert "30 23 * * " in novo
-    assert "0 0 * * " not in novo
+    assert "0 0 * * 1-6" not in novo
     assert "outro" in novo
 
 
 def test_merge_e_idempotente() -> None:
-    bloco = sched.render_block(sched.parse({"hora": "00:00"}), REPO)
+    bloco = _bloco()
     uma = sched.merge("* * * * * outro\n", bloco)
     duas = sched.merge(uma, bloco)
     assert uma == duas
 
 
 def test_merge_em_crontab_vazio() -> None:
-    bloco = sched.render_block(sched.parse({"hora": "00:00"}), REPO)
+    bloco = _bloco()
     novo = sched.merge("", bloco)
     assert novo.startswith(sched.BEGIN)
     assert novo.endswith("\n")
 
 
 def test_block_of_extrai_so_o_nosso_pedaco() -> None:
-    bloco = sched.render_block(sched.parse({"hora": "00:00"}), REPO)
+    bloco = _bloco()
     crontab = sched.merge("* * * * * outro\n", bloco)
     assert sched.block_of(crontab) == bloco
     assert sched.block_of("* * * * * outro\n") == ""
@@ -133,7 +222,8 @@ def test_block_of_extrai_so_o_nosso_pedaco() -> None:
 
 def test_ida_e_volta_do_arquivo_de_agenda(tmp_path) -> None:
     caminho = tmp_path / "agenda.json"
-    agenda = sched.parse({"hora": "01:15", "fontes": ["jira"], "ativo": False})
+    agenda = sched.parse({"confluence": {"hora": "01:15", "ativo": False},
+                          "jira": {"intervalo_min": 15, "dias": "uteis"}})
     sched.save(caminho, agenda)
     assert sched.load(caminho) == agenda
     # arquivo corrompido não derruba o painel: cai no padrão
@@ -228,17 +318,33 @@ def cliente(tmp_path, monkeypatch):
     monkeypatch.setattr(server.sched, "read_crontab", lambda: "* * * * * outro\n")
     monkeypatch.setattr(server.sched, "write_crontab", lambda c: escritos.append(c))
     monkeypatch.setattr(server, "AGENDA_PATH", tmp_path / "agenda.json")
+    # O fuso da máquina que roda o teste não pode mudar o resultado.
+    monkeypatch.setattr(server.sched, "deslocamento_do_servidor", lambda *a: 0)
     return TestClient(server.app), escritos, tmp_path / "agenda.json"
 
 
 def test_post_agenda_aplica_e_grava_o_arquivo(cliente) -> None:
     client, escritos, caminho = cliente
-    r = client.post("/api/agenda", json={"hora": "00:00", "fontes": ["confluence", "jira"]})
+    r = client.post("/api/agenda", json={
+        "confluence": {"ativo": True, "hora": "00:00", "contar_anexos": False},
+        "jira": {"ativo": True, "intervalo_min": 30, "inicio": 7, "fim": 20,
+                 "dias": "todos", "reconcile_domingo": True},
+    })
     assert r.status_code == 200 and r.json()["ok"] is True
     assert len(escritos) == 1
     assert "outro" in escritos[0], "não pode apagar job de terceiro"
     assert "0 0 * * 1-6" in escritos[0]
-    assert json.loads(caminho.read_text())["hora"] == "00:00"
+    assert "*/30 7-19 * * *" in escritos[0]
+    salvo = json.loads(caminho.read_text())
+    assert salvo["confluence"]["hora"] == "00:00"
+    assert salvo["jira"]["intervalo_min"] == 30
+
+
+def test_post_agenda_no_formato_antigo_ainda_e_aceito(cliente) -> None:
+    client, escritos, _ = cliente
+    r = client.post("/api/agenda", json={"hora": "00:00", "fontes": ["confluence", "jira"]})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert "run --only jira" in escritos[0]
 
 
 def test_post_agenda_invalida_nao_escreve_nada(cliente) -> None:
