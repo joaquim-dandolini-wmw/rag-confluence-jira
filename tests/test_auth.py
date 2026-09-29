@@ -228,8 +228,14 @@ def test_origem_do_retorno() -> None:
 
     assert _origem("https://claude.ai/api/mcp/auth_callback") == "https://claude.ai"
     assert _origem("http://localhost:33418/cb") == "http://localhost:33418"
-    # Nada que não seja http(s) com host entra num cabeçalho de CSP.
+    # Aplicativo com esquema próprio: o Cursor volta por cursor://.
+    assert _origem("cursor://anysphere.cursor-mcp/oauth/callback") == "cursor:"
+    assert _origem("vscode://vscode.github-authentication/did-authenticate") == "vscode:"
+    # Esquema que executa código ou lê o disco nunca entra num cabeçalho de CSP.
     assert _origem("javascript:alert(1)") is None
+    assert _origem("javascript://x/%0Aalert(1)") is None
+    assert _origem("data://x/text/html,oi") is None
+    assert _origem("file://host/etc/passwd") is None
     assert _origem("nao-e-url") is None
     assert _origem("") is None
 
@@ -247,6 +253,9 @@ def test_form_action_inclui_a_origem_de_retorno() -> None:
 
     sozinho = _sem_cache("n1")["Content-Security-Policy"]
     assert "form-action 'self';" in sozinho
+
+    cursor = _sem_cache("n1", "cursor:")["Content-Security-Policy"]
+    assert "form-action 'self' cursor:;" in cursor
 
 
 def test_csp_continua_apertado_no_resto() -> None:

@@ -60,15 +60,31 @@ def _erro_fatal(mensagem: str) -> HTMLResponse:
     return HTMLResponse(corpo, status_code=400, headers=_sem_cache(nonce))
 
 
+# Esquemas que nunca podem virar destino de formulário, mesmo que algum
+# cliente os registre: executam código ou leem o disco no contexto da página.
+_ESQUEMAS_PROIBIDOS = {"javascript", "data", "vbscript", "file", "blob", "filesystem", "about"}
+
+
 def _origem(url: str) -> str | None:
-    """Só esquema://host:porta de uma URL. Vazio se não der para confiar nela."""
+    """A fonte de CSP que casa com o retorno do cliente. None se não der para confiar.
+
+    http(s) vira `esquema://host:porta`. Esquema próprio de aplicativo vira só
+    `esquema:` — é assim que o Cursor (`cursor://anysphere.cursor-mcp/...`),
+    o VS Code e o Windsurf recebem o código de volta, e fonte de CSP com host
+    não casa de forma confiável com esquema que não é de rede.
+    """
     try:
         partes = urlsplit(url)
     except ValueError:
         return None
-    if partes.scheme not in {"http", "https"} or not partes.netloc:
+    # O urlsplit só reconhece esquema com os caracteres da RFC 3986, então
+    # nada como `;` ou espaço chega aqui para quebrar o cabeçalho.
+    esquema = partes.scheme.lower()
+    if not esquema or not partes.netloc or esquema in _ESQUEMAS_PROIBIDOS:
         return None
-    return f"{partes.scheme}://{partes.netloc}"
+    if esquema in {"http", "https"}:
+        return f"{esquema}://{partes.netloc}"
+    return f"{esquema}:"
 
 
 def _sem_cache(nonce: str, retorno: str | None = None) -> dict[str, str]:
