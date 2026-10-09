@@ -1,0 +1,15 @@
+{
+  "confluence": {
+    "ativo": true,
+    "hora": "00:00",
+    "contar_anexos": false
+  },
+  "jira": {
+    "ativo": true,
+    "intervalo_min": 30,
+    "inicio": 7,
+    "fim": 20,
+    "dias": "todos",
+    "reconcile_domingo": true
+  }
+}

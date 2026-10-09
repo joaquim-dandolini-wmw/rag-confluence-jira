@@ -68,6 +68,11 @@ LOG = logging.getLogger("indexer.sync")
 
 COMMIT_EVERY = 25
 
+# Espaços seguidos falhando antes de desistir da rodada. Falha isolada é vida
+# normal e o laço segue; falha em sequência significa instância fora do ar ou
+# em manutenção, e aí insistir em centenas de espaços só acrescenta carga.
+MAX_FALHAS_SEGUIDAS = 10
+
 # Quantos batches de embedding são acumulados antes de descarregar no Qdrant.
 # Com EMBED_BATCH_SIZE=16 dá 1.024 fatias por descarga: material suficiente
 # para a ordenação por comprimento reduzir padding, e ~230 documentos de
@@ -187,12 +192,14 @@ def extract_confluence(
 ) -> dict[str, Any]:
     conf = cfg.require_confluence()
     totals = {
-        "espacos": 0, "paginas_listadas": 0, "blogs_listados": 0, "buscados": 0,
+        "espacos": 0, "espacos_com_falha": 0, "paginas_listadas": 0,
+        "blogs_listados": 0, "buscados": 0,
         "pulados_sem_mudanca": 0, "gravados": 0, "falhas": 0, "removidos": 0,
         "anexos": 0, "anexos_indisponiveis": 0,
         "tempo_busca_s": 0.0, "tempo_anexos_s": 0.0,
     }
     started = time.monotonic()
+    falhas_seguidas = 0
 
     with ConfluenceClient(conf) as client:
         extractor = ConfluenceExtractor(client, conf)
@@ -210,6 +217,7 @@ def extract_confluence(
         for space_key in diff.scope:
             result = SpaceExtraction(space_key=space_key)
             written = 0
+            falhou = False
             try:
                 for document, version in extractor.iter_space(
                     space_key,
@@ -224,6 +232,23 @@ def extract_confluence(
                     written += 1
                     if written % COMMIT_EVERY == 0:
                         store.commit()
+            except Exception as exc:  # noqa: BLE001 - um espaço ruim não derruba a rodada
+                # Página individual que falha já era tolerada; o espaço inteiro
+                # não era, e um único getPages com erro custava as outras
+                # centenas de espaços da noite. O diff de deleções deste espaço
+                # fica de fora sozinho: listing_complete continua False, que é
+                # o que impede apagar conteúdo por causa de listagem parcial.
+                falhou = True
+                falhas_seguidas += 1
+                totals["espacos_com_falha"] += 1
+                LOG.warning(
+                    "espaço falhou, seguindo para o próximo",
+                    extra={"space_key": space_key, "erro": str(exc),
+                           "gravados_antes_da_falha": written,
+                           "falhas_seguidas": falhas_seguidas},
+                )
+            else:
+                falhas_seguidas = 0
             finally:
                 # Progresso parcial é progresso: a próxima rodada não recomeça.
                 store.commit()
@@ -254,7 +279,22 @@ def extract_confluence(
                 "falhas", "anexos", "anexos_indisponiveis", "tempo_busca_s", "tempo_anexos_s",
             ):
                 totals[key] += result.as_log_fields()[key]
-            LOG.info("espaço concluído", extra=result.as_log_fields())
+            if not falhou:
+                LOG.info("espaço concluído", extra=result.as_log_fields())
+
+            if falhas_seguidas >= MAX_FALHAS_SEGUIDAS:
+                # Seguir espaço a espaço só vale enquanto as falhas são
+                # pontuais. Quando são seguidas, a instância está fora do ar ou
+                # em manutenção, e insistir em 700 espaços com 3 tentativas
+                # cada vira carga em cima de um servidor que já está sofrendo.
+                totals["abortado"] = "falhas seguidas demais"
+                LOG.error(
+                    "Confluence falhando em sequência, extração interrompida",
+                    extra={"falhas_seguidas": falhas_seguidas,
+                           "espacos_processados": totals["espacos"],
+                           "limite": MAX_FALHAS_SEGUIDAS},
+                )
+                break
 
     totals["tempo_total_s"] = round(time.monotonic() - started, 2)
     totals["media_por_getpage_ms"] = round(
